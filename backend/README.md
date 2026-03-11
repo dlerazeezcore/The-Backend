@@ -1,146 +1,126 @@
-# The Book Backend
+# The Backend (FastAPI)
 
-This folder contains the backend platform for The Book.
+Backend services for The Book/The Backend product suite.
 
-It is centered around one unified FastAPI gateway and a small set of standalone FastAPI apps that can still be deployed separately when needed. The code is organized by domain under `backend/<domain>/...`, with provider-specific integrations nested inside each domain.
+This README is code-verified against the current repository state on March 11, 2026.
 
-This README was verified against the code-level FastAPI route registration on March 8, 2026.
+## 1. Overview
 
-## Quick Handoff For Other AIs
+This repository contains one primary FastAPI gateway and multiple standalone FastAPI apps.
 
-This section is written so another Codex session can start from this README alone.
+The default production target is:
 
-That other session should still verify the live deployment, but it should not need extra explanation from the user if it has either repo access, Playwright access to the frontend, or both.
+- `backend.gateway.app:app`
 
-### Zero-Context AI Runbook
+The standalone apps exist for domain-level split deployment when needed:
 
-1. Start with the default assumption that the intended backend is the unified gateway: `backend.gateway.app:app`.
-2. Discover the real backend base URL from frontend config, runtime config, or Playwright network traffic before changing frontend code.
-3. Verify the target backend with `GET /__build`, `GET /health`, and `GET /openapi.json`.
-4. Treat the live OpenAPI schema and observed network traffic as higher priority than assumptions from route names.
-5. Use `/api/auth/*` as the default auth system unless the frontend is clearly the separate eSIM consumer app.
-6. Use `/api/esim-app/*` only for the separate eSIM consumer app flow.
-7. Treat `/api/other-apis/*` and `/api/permissions*` as admin/config routes, not as normal product APIs.
-8. Do not guess payload shapes when `/docs` or `/openapi.json` is available.
+- Flights (`backend.flights.wings.api:create_app`)
+- Passenger Database (`backend.passenger_database.api:create_app`)
+- eSIMAccess (`backend.esim.esimaccess.api:create_app`)
+- Corevia Email (`backend.communications.corevia_email.app:app`)
 
-### Backend Discovery Workflow
+## 2. Architecture
 
-If the backend base URL is not explicitly provided:
+| Area | Primary Files | Purpose |
+| --- | --- | --- |
+| Unified gateway | `backend/gateway/app.py`, `backend/app.py` | Main API surface and router composition |
+| Auth | `backend/auth/api.py`, `backend/auth/service.py` | Main bearer-token auth and user management |
+| Flights (Wings) | `backend/gateway/routers/flights.py`, `backend/flights/wings/*` | Availability + booking over Wings provider |
+| eSIM unified | `backend/gateway/routers/esim.py`, `backend/esim/oasis/*`, `backend/esim/esimaccess/*` | Unified eSIM catalog, quote, order, and provider operations |
+| eSIM app | `backend/gateway/routers/esim_app.py`, `backend/gateway/esim_app_store.py` | Consumer app flow with local token pattern |
+| Payments (FIB) | `backend/gateway/routers/payments.py`, `backend/payments/fib/service.py` | FIB config + payment link creation |
+| Notifications / Email | `backend/gateway/routers/notifications.py`, `backend/communications/corevia_email/*` | Email config and send operations |
+| Permissions | `backend/gateway/routers/permissions.py`, `backend/gateway/permissions_store.py` | Service/API/provider toggles and schedules |
+| Passenger database | `backend/passenger_database/*` | Profiles, members, member history |
+| Pending | `backend/pending/*` | Manual fulfillment queue operations |
+| Transactions | `backend/transactions/*` | Transaction history and query endpoints |
+| Admin | `backend/admin/*` | Admin users, subscriptions, visa catalog, protected config endpoints |
+| Persistence adapter | `backend/supabase/*` | Supabase-backed document store with local fallback |
 
-1. Search frontend code for config keys like `API`, `BASE_URL`, `BACKEND`, `VITE_`, `NEXT_PUBLIC_`, `PUBLIC_`, `axios.create`, and `fetch(`.
-2. If a live frontend is available, inspect Playwright network traffic to capture the real API host.
-3. If running locally and nothing overrides it, assume `http://127.0.0.1:8000`.
-4. Probe the candidate backend with:
-   - `GET <base>/__build`
-   - `GET <base>/health`
-   - `GET <base>/openapi.json`
+## 3. Runtime Entry Points
 
-### Route-Family Decision Rules
+Run from repo root (`/Users/laveencompany/Projects/The Backend`).
 
-Use these rules to avoid mixing up the unified gateway and standalone apps:
-
-- If `GET /api/esim/settings` exists, you are talking to the unified gateway eSIM surface.
-- If `GET /api/esim/access/settings` exists, you are talking to the standalone eSIMAccess app.
-- If `/api/esim/access/settings` returns `404`, that usually means the request hit the unified gateway, not that auth failed.
-- If the response code is `401` or `403`, the route exists and auth is the issue.
-- If `/openapi.json` includes `/api/pending*`, `/api/transactions*`, or `/admin/*`, you are almost certainly on the unified gateway.
-
-### One-File Prompt For Another Codex Session
-
-If you want to hand this backend to another Codex session using only this README, use a prompt like this:
-
-```text
-Read /Users/laveencompany/Projects/The Book/backend/README.md first and follow it as the backend discovery runbook.
-
-Then:
-- inspect the frontend with Playwright
-- discover the real backend base URL from code or network traffic
-- verify the live backend with /__build, /health, and /openapi.json
-- assume the unified gateway unless the live contract proves a standalone app is deployed
-- use live OpenAPI shapes instead of guessing payloads
-- only use /api/esim-app/* if the frontend is the separate eSIM consumer app
-- treat /api/other-apis/* and /api/permissions* as admin/config routes
-```
-
-The most important fixed facts in this repo:
-
-- canonical deployment target: `backend.gateway.app:app`
-- unified docs: `/docs`
-- raw OpenAPI: `/openapi.json`
-- health check: `/health`
-- build info: `/__build`
-- primary auth system: `/api/auth/*` with Bearer token
-- separate eSIM consumer app auth exists under `/api/esim-app/*`
-
-## Canonical Deployment
-
-Use the unified gateway as the default deployment target:
+### Canonical unified gateway
 
 ```bash
 uvicorn backend.gateway.app:app --host 0.0.0.0 --port 8000
 ```
 
-Compatibility alias:
+### Compatibility alias
 
 ```bash
 uvicorn backend.app:app --host 0.0.0.0 --port 8000
 ```
 
-`backend/app.py` is intentionally only a compatibility alias to `backend.gateway.app`. The canonical router wiring lives in `backend/gateway/app.py`.
+`backend/app.py` only re-exports `backend.gateway.app:app`.
 
-Backend-local deployment files:
+### Standalone apps
 
-- `backend/Dockerfile`
-- `backend/requirements.txt`
+```bash
+uvicorn backend.flights.wings.app:app --host 0.0.0.0 --port 5050
+uvicorn backend.passenger_database.app:app --host 0.0.0.0 --port 5060
+uvicorn backend.esim.esimaccess.app:app --host 0.0.0.0 --port 5070
+uvicorn backend.communications.corevia_email.app:app --host 0.0.0.0 --port 5080
+```
 
-## Backend Inventory
+## 4. Local Setup
 
-| Area | Kind | Entrypoint / Location | Exposed Prefixes | Notes |
-| --- | --- | --- | --- | --- |
-| Unified gateway | FastAPI app | `backend.gateway.app:app` | mixed `/api/*` | Primary production entrypoint |
-| Auth | Gateway router | `backend/auth/api.py` | `/api/auth/*` | Main company-admin, sub-user, super-admin auth |
-| Flights / Wings | Gateway router + standalone app | `backend/gateway/routers/flights.py`, `backend.flights.wings.app:app` | `/api/availability`, `/api/book` | Wings provider integration |
-| eSIM unified | Gateway router | `backend/gateway/routers/esim.py` | `/api/esim/*`, `/api/other-apis/esim*` | Aggregates Oasis + eSIMAccess behavior for the unified backend |
-| eSIM app | Gateway router | `backend/gateway/routers/esim_app.py` | `/api/esim-app/*` | Separate mobile/app-style user flow and local token model |
-| Payments / FIB | Gateway router + service | `backend/gateway/routers/payments.py`, `backend/payments/fib/service.py` | `/api/other-apis/fib*`, `/api/esim-app/fib/create-payment` | Admin FIB config plus checkout payment-link creation |
-| Passenger database | Gateway router + standalone app | `backend/passenger_database/api.py`, `backend.passenger_database.app:app` | `/api/passenger-database/*` | Profiles, members, history |
-| Pending | Gateway router | `backend/pending/api.py` | `/api/pending*` | Manual completion / rejection queue |
-| Transactions | Gateway router | `backend/transactions/api.py` | `/api/transactions*` | Reporting and transaction detail |
-| Admin panel | Gateway router | `backend/admin/api.py` | `/admin/*`, `/subscriptions/api/assign` | Users, subscriptions, visa catalog, protected config routes |
-| Notifications / email | Gateway router + standalone app | `backend/gateway/routers/notifications.py`, `backend.communications.corevia_email.app:app` | `/api/notify/email`, `/api/other-apis/email*` | Email send/config/test |
-| Permissions | Gateway router | `backend/gateway/routers/permissions.py` | `/api/permissions*` | Feature and provider toggle state |
-| eSIMAccess provider app | Standalone FastAPI app | `backend.esim.esimaccess.app:app` | `/api/esim/access/*`, `/api/esim/*` | Full provider-facing eSIMAccess surface |
-| eSIM Oasis provider | Internal provider module | `backend/esim/oasis/service.py` | internal | Used by the unified eSIM router |
-| Twilio / WhatsApp | Internal helper module | `backend/communications/twilio_whatsapp/service.py` | internal | Used for manual-mode notifications, not mounted as HTTP routes |
-| Supabase adapter | Internal persistence layer | `backend/supabase/*` | internal | Canonical document-style persistence for backend state |
+### Prerequisites
 
-## Unified Gateway Route Map
+- Python 3.11+ (project currently uses Python 3.12 in Docker)
+- `pip`
 
-The unified gateway currently exposes the following route families.
+### Install
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r backend/requirements.txt
+```
+
+### Quick verify
+
+```bash
+curl http://127.0.0.1:8000/health
+curl http://127.0.0.1:8000/__build
+curl http://127.0.0.1:8000/openapi.json
+```
+
+### Runtime dependencies
+
+Dependencies are currently pinned in `backend/requirements.txt`:
+
+- `fastapi==0.115.0`
+- `uvicorn[standard]==0.30.6`
+- `jinja2==3.1.4`
+- `python-multipart==0.0.9`
+- `requests==2.32.3`
+- `httpx==0.27.0`
+- `itsdangerous`
+- `python-dotenv==1.0.1`
+
+### Tests
+
+There is currently no committed automated test suite in this repository.
+
+## 5. Unified Gateway API (Categorized)
+
+The unified gateway (`backend.gateway.app:app`) currently registers 150 routes, including hidden compatibility aliases.
 
 ### System
 
 - `GET /health`
-  Gateway health. `ok` depends on Wings configuration being present.
 - `GET /__build`
-  Build metadata for the running gateway.
 - `GET /docs`
-  Swagger UI for the unified API.
 - `GET /openapi.json`
-  Raw OpenAPI schema for codegen or AI-assisted integration.
 - `GET /redoc`
-  ReDoc view of the schema.
 
-### Auth
-
-Public auth endpoints:
+### Auth (`/api/auth/*`)
 
 - `POST /api/auth/login`
 - `POST /api/auth/signup`
 - `POST /api/auth/forgot-password`
-
-Protected auth endpoints:
-
 - `POST /api/auth/logout`
 - `GET /api/auth/me`
 - `GET /api/auth/users`
@@ -152,25 +132,34 @@ Protected auth endpoints:
 - `POST /api/auth/admin/users`
 - `DELETE /api/auth/admin/users/{user_id}`
 
-Hidden compatibility aliases still exist, but are not included in OpenAPI:
+Hidden compatibility aliases exist:
 
 - `POST /login`
 - `POST /signup`
 - `POST /forgot-password`
 - `GET|POST /logout`
 
-### Flights / Wings
+### Flights
 
 - `POST /api/availability`
-  Search available itineraries against Wings.
 - `POST /api/book`
-  Create a Wings booking from selected itinerary data.
 
-Current gateway behavior: these endpoints are public and do not require the main Bearer auth token.
+Runtime behavior notes:
 
-### eSIM Unified API
+- In unified gateway, these endpoints are not bearer-protected by middleware.
+- They are still governed by OTA permissions/schedule logic.
+- `POST /api/book` can return pending when ticketing is disabled by policy/schedule.
 
-Public catalog and order endpoints:
+### eSIM Unified
+
+Protected provider/admin config endpoints:
+
+- `GET /api/other-apis/esim`
+- `POST /api/other-apis/esim`
+- `GET /api/other-apis/esim/ping`
+- `POST /api/other-apis/esim/catalog-refresh`
+
+Public/main product endpoints:
 
 - `GET /api/esim/bundles`
 - `GET /api/esim/countries-index`
@@ -181,45 +170,37 @@ Public catalog and order endpoints:
 - `GET /api/esim/balance`
 - `GET /api/esim/settings`
 
-Provider config and operational endpoints:
+Order action endpoints that require main auth token:
 
-- `GET /api/other-apis/esim`
-- `POST /api/other-apis/esim`
-- `GET /api/other-apis/esim/ping`
-- `POST /api/other-apis/esim/catalog-refresh`
+- `POST /api/esim/orders/{order_id}/cancel`
+- `POST /api/esim/orders/{order_id}/refund`
+- `POST /api/esim/orders/{order_id}/topup`
 
-These `/api/other-apis/esim*` routes now require a main-auth super-admin Bearer token.
+Hidden aliases are also registered under `/esim/api/*` and `/api/esim/access/*` legacy variants.
 
-What this router does:
+### eSIM App (`/api/esim-app/*`)
 
-- merges Oasis and eSIMAccess catalog data
-- applies admin/provider permission policies
-- exposes a simplified order surface for the unified backend
-- falls back to pending/manual mode when provider selling is offline or scheduled off
-
-### eSIM Consumer App API
-
-Auth and identity:
+Auth and basic checks:
 
 - `GET /api/esim-app/test-api`
 - `POST /api/esim-app/signup`
 - `POST /api/esim-app/login`
 
-Super-admin controls:
+Super admin and users:
 
 - `POST /api/esim-app/super-admin/check`
 - `GET /api/esim-app/super-admin/list`
 - `POST /api/esim-app/super-admin/add`
 - `DELETE /api/esim-app/super-admin/remove`
-
-User and loyalty controls:
-
 - `GET /api/esim-app/users`
 - `DELETE /api/esim-app/users/{user_id}`
+
+Loyalty:
+
 - `POST /api/esim-app/loyalty/grant`
 - `GET /api/esim-app/loyalty/status`
 
-Catalog and merchandising:
+Catalog and destination settings:
 
 - `GET /api/esim-app/destinations`
 - `GET /api/esim-app/countries`
@@ -237,7 +218,7 @@ App settings:
 - `POST /api/esim-app/whitelist-settings`
 - `DELETE /api/esim-app/whitelist-settings`
 
-Owned eSIM lifecycle:
+Checkout and owned eSIM lifecycle:
 
 - `GET /api/esim-app/my-esims`
 - `POST /api/esim-app/fib/create-payment`
@@ -246,9 +227,9 @@ Owned eSIM lifecycle:
 - `POST /api/esim-app/purchase/complete`
 - `POST /api/esim-app/purchase/loyalty`
 
-This is not the same auth system as `/api/auth/*`. It uses a lightweight local-token flow where successful login/signup returns a token shaped like `local-<userId>`. Some routes also accept `userId` or `adminPhone` directly.
-
 ### Passenger Database
+
+Primary endpoints:
 
 - `GET /api/passenger-database/profiles`
 - `GET /api/passenger-database/search`
@@ -261,16 +242,16 @@ This is not the same auth system as `/api/auth/*`. It uses a lightweight local-t
 - `DELETE /api/passenger-database/profiles/{profile_id}/members/{member_id}`
 - `GET /api/passenger-database/members/{member_id}/history`
 
-Legacy hidden prefix also exists:
+Hidden legacy alias prefix:
 
 - `/passenger-database/api/*`
 
-Owner resolution works in this order:
+Gateway owner resolution order for passenger DB routes:
 
-1. Bearer token from the main auth system
-2. `X-Owner-Id` header
-3. `owner_id` query parameter
-4. `owner_user_id` in JSON body
+1. Main bearer token owner
+2. `owner_user_id` in JSON body
+3. `owner_id` query param
+4. `X-Owner-Id` header
 5. `PASSENGER_DB_DEFAULT_OWNER_ID`
 
 ### Pending
@@ -280,7 +261,7 @@ Owner resolution works in this order:
 - `POST /api/pending/{pending_id}/complete`
 - `POST /api/pending/{pending_id}/reject`
 
-These endpoints require a valid main Bearer token and the account must have the pending service enabled.
+All pending endpoints require main auth token and pending service access.
 
 ### Transactions
 
@@ -288,7 +269,7 @@ These endpoints require a valid main Bearer token and the account must have the 
 - `GET /api/transactions/{transaction_id}`
 - `GET /api/transactions/by-pending/{pending_id}`
 
-`/api/transactions` supports query filters:
+Supported filters on `GET /api/transactions`:
 
 - `q`
 - `status`
@@ -297,345 +278,123 @@ These endpoints require a valid main Bearer token and the account must have the 
 - `limit`
 - `offset`
 
-These endpoints require a valid main Bearer token and the account must have the transactions service enabled.
+All transaction endpoints require main auth token and transactions service access.
 
 ### Notifications / Email
 
+Operational send endpoint:
+
 - `POST /api/notify/email`
+
+Protected config/test endpoints:
+
 - `GET /api/other-apis/email`
 - `POST /api/other-apis/email`
 - `POST /api/other-apis/email/test-send`
 
-`/api/notify/email` is the operational send endpoint. The `/api/other-apis/email*` config/test routes now require a main-auth super-admin Bearer token.
-
 ### Payments / FIB
+
+Protected config/checkout endpoints:
 
 - `GET /api/other-apis/fib`
 - `POST /api/other-apis/fib`
 - `POST /api/other-apis/fib/create-payment`
 
-These `/api/other-apis/fib*` routes now require a main-auth super-admin Bearer token.
-
-For the separate eSIM consumer app checkout flow, use:
+eSIM app checkout endpoint:
 
 - `POST /api/esim-app/fib/create-payment`
 
 ### Permissions
 
+Protected endpoints:
+
 - `GET /api/permissions`
 - `POST /api/permissions`
 - `GET /api/permissions/status`
 
-This route family stores and reports service toggles, provider toggles, schedule state, and ticketing behavior. It now requires a main-auth super-admin Bearer token.
+### Admin / Back Office
 
-### Admin Panel / Back Office
-
-Protected admin endpoints:
+User and sub-user admin:
 
 - `GET /admin/users/api/list`
 - `GET /admin/sub-users/api/list`
+
+Subscriptions:
+
 - `GET /admin/subscriptions/api/list`
 - `POST /admin/subscriptions/api/addons/update`
 - `POST /admin/subscriptions/api/grant`
 - `POST /admin/subscriptions/api/{sub_id}/update`
 - `POST /admin/subscriptions/api/{sub_id}/delete`
 - `POST /subscriptions/api/assign`
+- `GET /subscriptions/api/check`
+
+Visa catalog:
+
 - `GET /admin/visa-catalog/api/list`
 - `POST /admin/visa-catalog/api/country/save`
 - `POST /admin/visa-catalog/api/country/{country_id}/delete`
 - `POST /admin/visa-catalog/api/type/save`
 - `POST /admin/visa-catalog/api/type/{type_id}/delete`
 
-The admin router also defines protected versions of:
+## 6. Effective Security Notes (Important)
 
-- `/api/permissions`
-- `/api/permissions/status`
-- `/api/other-apis/fib`
-- `/api/other-apis/fib/create-payment`
-- `/api/other-apis/email`
-- `/api/other-apis/email/test-send`
-- `/api/other-apis/esim`
-- `/api/other-apis/esim/ping`
+### Main auth
+
+- `/api/auth/login` returns bearer tokens.
+- Protected routes read `Authorization: Bearer <token>` or fallback `auth_token` cookie in some modules.
+
+### Route duplication
+
+Gateway includes both generic routers and admin router for some same paths:
+
+- `/api/permissions*`
+- `/api/other-apis/fib*`
+- `/api/other-apis/email*`
+- `/api/other-apis/esim*`
 - `/api/esim/countries-index`
 
-However, see the "Important Current Reality" section below for the actual effective behavior in the unified gateway.
+In practice:
 
-## Standalone Apps
+- Config routes are super-admin protected in both implementations.
+- `GET /api/esim/countries-index` is public via the eSIM router version registered earlier.
 
-These apps still exist and can be deployed separately when a domain needs its own process.
+### eSIM app auth model (separate from main auth)
 
-### Unified gateway
+- Login/signup returns tokens like `local-<userId>`.
+- Several routes derive user from `Authorization: Bearer local-<userId>`.
+- Several admin routes rely on `adminPhone` payload/query style checks.
+- Root admin phone is hardcoded in `backend/gateway/esim_app_store.py` as `+9647507343635`.
+- Root admin password defaults to `StrongPass123` unless `ESIM_ROOT_ADMIN_PASSWORD` is set.
 
-```bash
-uvicorn backend.gateway.app:app --reload --host 0.0.0.0 --port 8000
-```
+## 7. Standalone Apps: Scope and Differences
 
-### Flights / Wings
+| App | Entrypoint | Port | Main Purpose | Auth/Security Difference |
+| --- | --- | --- | --- | --- |
+| Unified Gateway | `backend.gateway.app:app` | `8000` | All-in-one deployment | Mixed public/protected surface by route |
+| Flights | `backend.flights.wings.app:app` | `5050` | Wings-only flow | `/api/availability` and `/api/book` require bearer auth and service/api access |
+| Passenger DB | `backend.passenger_database.app:app` | `5060` | Passenger + pending + transactions | Middleware enforces auth for passenger DB prefixes |
+| eSIMAccess | `backend.esim.esimaccess.app:app` | `5070` | Provider-oriented eSIM operations | eSIM endpoints require bearer auth and eSIM service access |
+| Corevia Email | `backend.communications.corevia_email.app:app` | `5080` | Email config/send service | Config/test routes require super admin; send routes require auth |
 
-```bash
-uvicorn backend.flights.wings.app:app --reload --host 0.0.0.0 --port 5050
-```
+Standalone-only signup/forgot-password public access is disabled by default using environment toggles.
 
-Exposes:
+## 8. Environment Variables (Categorized)
 
-- `/api/auth/*`
-- `POST /api/availability`
-- `POST /api/book`
-- `GET /health`
-- `GET /__build`
-
-Security model:
-
-- `POST /api/availability` and `POST /api/book` now require a main-auth Bearer token
-- user access is also checked against `service_access.flights` and `api_access.ota`
-- public signup is disabled by default for this standalone service
-
-### Passenger Database
-
-```bash
-uvicorn backend.passenger_database.app:app --reload --host 0.0.0.0 --port 5060
-```
-
-Exposes:
-
-- full `/api/auth/*` auth surface
-- full `/api/passenger-database/*` surface
-- pending routes
-- transaction routes
-- hidden `/passenger-database/api/*` aliases
-- `GET /health`
-- `GET /__build`
-
-Security model:
-
-- passenger-database CRUD routes now require a main-auth Bearer token in the standalone app
-- standalone requests can no longer bypass auth by supplying `owner_id`, `owner_user_id`, or `X-Owner-Id` alone
-- public signup is disabled by default for this standalone service
-
-### eSIMAccess Provider App
-
-```bash
-uvicorn backend.esim.esimaccess.app:app --reload --host 0.0.0.0 --port 5070
-```
-
-Exposes:
-
-- full `/api/auth/*` auth surface
-- eSIMAccess-specific provider endpoints under `/api/esim/access/*`
-- alias endpoints under `/api/esim/*`
-- hidden legacy aliases under `/esim/api/*`
-- `GET /reports/esim/api/list`
-- `GET /health`
-- `GET /__build`
-
-Security model:
-
-- provider routes already require a main-auth Bearer token
-- public signup is now disabled by default for this standalone service
-
-The standalone eSIMAccess app has more provider-control endpoints than the unified gateway, including:
-
-- package listing
-- region lookup
-- topup options and execution
-- usage lookup
-- cancel / suspend / unsuspend / revoke
-- SMS send
-- provider webhook registration
-- refund and order-level topup / cancel
-
-### Corevia Email
-
-```bash
-uvicorn backend.communications.corevia_email.app:app --reload --host 0.0.0.0 --port 5080
-```
-
-Exposes:
-
-- `POST /api/auth/login`
-- `GET /api/auth/me`
-- `GET /api/other-apis/email`
-- `POST /api/other-apis/email`
-- `POST /api/other-apis/email/test-send`
-- `POST /api/notify/email`
-- `GET /api/email/config`
-- `POST /api/email/config`
-- `POST /api/email/test-send`
-- `POST /api/email/send`
-- `GET /health`
-- `GET /__build`
-
-This standalone app can also mount a colocated frontend if `frontend/dist/index.html` or `frontend/index.html` exists in the email app folder.
-
-Security model:
-
-- config and test routes are now super-admin only
-- send routes now require a main-auth Bearer token
-- public signup is disabled by default for this standalone service
-
-## Auth And Access Model
-
-### Main auth system
-
-The primary B2B/admin auth system is `/api/auth/*`.
-
-Typical flow:
-
-1. `POST /api/auth/login`
-2. store the returned bearer token
-3. send `Authorization: Bearer <token>` on protected requests
-
-Example:
-
-```bash
-curl -X POST "https://<backend>/api/auth/login" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "email": "dler@corevia-consultants.com",
-    "password": "StrongPass123"
-  }'
-```
-
-Example authenticated calls:
-
-```bash
-curl "https://<backend>/api/auth/me" \
-  -H "Authorization: Bearer <token>"
-```
-
-```bash
-curl "https://<backend>/api/passenger-database/profiles" \
-  -H "Authorization: Bearer <token>"
-```
-
-```bash
-curl "https://<backend>/api/pending" \
-  -H "Authorization: Bearer <token>"
-```
-
-```bash
-curl "https://<backend>/api/transactions?limit=20&offset=0" \
-  -H "Authorization: Bearer <token>"
-```
-
-Roles in the main auth system:
-
-- `super_admin`
-- `company_admin`
-- `sub_user`
-
-Service access is enforced for some domains, especially:
-
-- pending
-- transactions
-- sub-user service visibility
-
-### eSIM app auth system
-
-The `/api/esim-app/*` surface is separate from the main auth system.
-
-Important current behavior:
-
-- signup/login return a local token shaped like `local-<userId>`
-- some routes read the user from `Authorization: Bearer local-<userId>`
-- some routes accept `userId` directly
-- super-admin routes use `adminPhone`
-- the root admin phone is hardcoded in `backend/gateway/esim_app_store.py`
-- the root admin password comes from `ESIM_ROOT_ADMIN_PASSWORD` and defaults to `StrongPass123`
-
-If you are building a UI against `/api/esim-app/*`, treat it as a separate auth product, not as a variant of `/api/auth/*`.
-
-## Frontend Integration Guidance
-
-For most web frontends, use one backend base URL and let the frontend call the unified gateway.
-
-Recommended integration pattern:
-
-1. Use `/docs` or `/openapi.json` as the contract source.
-2. Use `/api/auth/login` for B2B/admin flows.
-3. Use the returned bearer token for protected domains.
-4. Use `/api/passenger-database/*`, `/api/pending*`, `/api/transactions*`, and `/admin/*` for dashboard-like product areas.
-5. Use `/api/availability` and `/api/book` for flight search and booking.
-6. Use `/api/esim/*` for the unified eSIM catalog/order flow.
-7. Use `/api/esim-app/*` only if you are building the separate eSIM consumer app experience.
-8. Use `/api/esim-app/fib/create-payment` for consumer-app FIB checkout, not `/api/other-apis/fib/create-payment`.
-9. If an existing frontend path returns `404`, check `/openapi.json` before rewriting business logic.
-10. In this repo, `404 /api/esim/access/settings` usually means the frontend is talking to the unified gateway and should use `/api/esim/settings` instead.
-11. For Playwright-driven fixes, inspect the actual request URLs first and then align the frontend to the deployed backend contract.
-
-If you are handing this backend to another AI and want to give it only this README, give it a prompt shaped like this:
-
-```text
-Read /Users/laveencompany/Projects/The Book/backend/README.md first.
-Use Playwright to inspect the frontend, discover the backend base URL from network/config, and verify the live contract with /openapi.json before editing anything.
-Default to the unified gateway unless the deployed API proves a standalone app is being used.
-```
-
-## Important Current Reality
-
-These points are based on the actual route registration and test calls against the FastAPI app, not on naming intent.
-
-### Sensitive config routes are now locked down
-
-In the unified gateway, these paths are registered by both the plain gateway routers and the protected admin router:
-
-- `/api/permissions`
-- `/api/permissions/status`
-- `/api/other-apis/fib`
-- `/api/other-apis/fib/create-payment`
-- `/api/other-apis/email`
-- `/api/other-apis/email/test-send`
-- `/api/other-apis/esim`
-- `/api/other-apis/esim/ping`
-
-The gateway router versions of those config paths now enforce the same main-auth super-admin requirement as the admin router.
-
-That means:
-
-- unauthenticated callers now receive `401`
-- authenticated non-super-admin callers receive `403`
-- the duplicate admin-tagged routes still exist in code, but the earlier gateway routes are no longer public
-
-The public eSIM catalog route `GET /api/esim/countries-index` remains intentionally public.
-
-For public eSIM-app checkout, use `POST /api/esim-app/fib/create-payment`.
-
-### Public gateway surfaces still include product APIs
-
-Today, the unified gateway allows direct unauthenticated access to:
-
-- flights search and booking
-- unified eSIM catalog and ordering routes
-- eSIM app routes
-
-This README documents the current behavior so integrators do not build on false assumptions.
-
-## Environment Variables
-
-### Core / shared
+### Core runtime
 
 - `BACKEND_CORS_ALLOW_ORIGINS`
 - `BACKEND_CORS_ALLOW_ORIGIN_REGEX`
 - `PUBLIC_BASE_URL`
+- `ESIM_PREWARM_ON_STARTUP`
 
-Default CORS already allows:
-
-- `http://localhost:3000`
-- `http://localhost:4173`
-- `http://localhost:5173`
-- `http://127.0.0.1:3000`
-- `http://127.0.0.1:4173`
-- `http://127.0.0.1:5173`
-
-### Auth / session
+### Auth and session
 
 - `AUTH_TOKEN_SECRET`
 - `APP_SESSION_SECRET`
 - `AUTH_TOKEN_MAX_AGE_SECONDS`
 - `AUTH_STORE_LEGACY_PASSWORD`
 - `AUTH_INCLUDE_TEMP_PASSWORD_IN_RESPONSE`
-
-`AUTH_TOKEN_SECRET` is the primary secret. `APP_SESSION_SECRET` is a fallback.
 
 ### Supabase
 
@@ -647,8 +406,6 @@ Default CORS already allows:
 - `SUPABASE_REQUIRED`
 - `SUPABASE_TIMEOUT_SECONDS`
 
-See also `backend/supabase/README.md`.
-
 ### Flights / Wings
 
 - `WINGS_AUTH_TOKEN`
@@ -659,14 +416,11 @@ See also `backend/supabase/README.md`.
 - `WINGS_SEARCH_URL`
 - `WINGS_BOOK_URL`
 
-Wings config resolution supports either a base URL or full search/book endpoint URLs.
-
-### eSIM unified / Oasis
+### eSIM Oasis
 
 - `ESIM_OASIS_KEY_ID`
 - `ESIM_OASIS_SECRET`
 - `ESIM_OASIS_BASE_URL`
-- `ESIM_PREWARM_ON_STARTUP`
 
 ### eSIMAccess
 
@@ -680,13 +434,11 @@ Wings config resolution supports either a base URL or full search/book endpoint 
 - `ESIMACCESS_USE_SIGNATURE`
 - `ESIMACCESS_TIMEOUT_SEC`
 
-### Payments / FIB
+### FIB payments
 
 - `FIB_BASE_URL`
 - `FIB_CLIENT_ID`
 - `FIB_CLIENT_SECRET`
-
-The gateway and admin APIs can also persist FIB accounts/config in backend state instead of relying only on env vars.
 
 ### Email / SMTP
 
@@ -699,16 +451,12 @@ The gateway and admin APIs can also persist FIB accounts/config in backend state
 - `SMTP_STARTTLS`
 - `SMTP_TIMEOUT`
 
-Email accounts/config can also be persisted through the API.
-
 ### WhatsApp
 
 - `WHATSAPP_WEBHOOK_URL`
 - `WHATSAPP_ACCESS_TOKEN`
 - `WHATSAPP_PHONE_NUMBER_ID`
 - `WHATSAPP_API_VERSION`
-
-These are used by the internal WhatsApp helper for notifications and manual-mode workflows.
 
 ### Passenger database
 
@@ -718,145 +466,126 @@ These are used by the internal WhatsApp helper for notifications and manual-mode
 
 - `ESIM_ROOT_ADMIN_PASSWORD`
 
-### Standalone signup toggles
+### Standalone public-signup toggles (default off)
 
 - `PASSENGER_DB_ALLOW_PUBLIC_SIGNUP`
 - `COREVIA_EMAIL_ALLOW_PUBLIC_SIGNUP`
 - `ESIMACCESS_ALLOW_PUBLIC_SIGNUP`
 - `FLIGHTS_ALLOW_PUBLIC_SIGNUP`
 
-All of these default to disabled. Set one explicitly only if you intentionally want internet-facing public registration on that standalone service.
-
-### Standalone password-reset toggles
+### Standalone forgot-password toggles (default off)
 
 - `PASSENGER_DB_ALLOW_PUBLIC_FORGOT_PASSWORD`
 - `COREVIA_EMAIL_ALLOW_PUBLIC_FORGOT_PASSWORD`
 - `ESIMACCESS_ALLOW_PUBLIC_FORGOT_PASSWORD`
 - `FLIGHTS_ALLOW_PUBLIC_FORGOT_PASSWORD`
 
-All of these also default to disabled. Set one explicitly only if you intentionally want anonymous password-reset requests exposed on that standalone service.
+## 9. Persistence and Data Model
 
-## Storage Model
+The backend uses Supabase document storage with local JSON fallback.
 
-This backend is not purely stateless.
+### Supabase-backed document keys
 
-Current storage layers:
+| Doc key | Owned by | Local fallback |
+| --- | --- | --- |
+| `users` | `backend/auth/service.py` via `supabase/auth/users_repo.py` | `backend/data/users.json` |
+| `permissions` | `backend/gateway/permissions_store.py` | `backend/gateway/permissions.json` |
+| `fib_config` | `backend/payments/fib/service.py` | `backend/payments/fib/config.json` |
+| `email_config` | `backend/communications/corevia_email/service.py` | `backend/communications/corevia_email/config.json` |
+| `esim_oasis_config` | `backend/esim/oasis/service.py` | `backend/esim/oasis/config.json` |
+| `esim_app_store` | `backend/gateway/esim_app_store.py` | `backend/data/esim_app_store.json` |
+| `pending` | `backend/pending/store.py` | `backend/data/pending.json` |
+| `transactions` | `backend/transactions/store.py` | `backend/data/transactions.json` |
+| `passenger_profiles` | `backend/passenger_database/service.py` | `backend/data/passenger_db/profiles.json` |
+| `passenger_history` | `backend/passenger_database/service.py` | `backend/data/passenger_db/history.json` |
+| `subscriptions` | `backend/admin/subscriptions.py` | `backend/data/subscriptions.json` |
+| `addons` | `backend/admin/subscriptions.py` | `backend/data/addons.json` |
+| `esimaccess_orders` | `backend/esim/esimaccess/store.py` | `backend/data/esimaccess_orders.json` |
+| `esim_orders` (legacy read fallback) | `backend/esim/esimaccess/store.py` | `backend/data/esim_orders.json` |
+| `visa_catalog` | `backend/admin/service.py` | `backend/data/visa_catalog.json` |
 
-- `backend/supabase/*`
-  Canonical document-style persistence adapter for backend state.
-- `backend/data/*`
-  Local JSON fallback or legacy local state for development and compatibility.
-- provider-local config files
-  Some provider modules still support colocated JSON config files as fallback.
+Additional cache files:
 
-Important current reality:
+- eSIM merged catalog cache: `backend/esim/oasis/catalog_cache.json`
 
-- backend business logic is organized under `backend/`
-- persistence is moving toward `backend/supabase/*`
-- several modules still keep local JSON compatibility for development and fallback
+## 10. CORS Defaults
 
-Examples of persisted state managed this way:
+If not overridden by env, these origins are allowed:
 
-- users
-- passenger profiles and history
-- pending items
-- transactions
-- FIB config
-- email config
-- eSIM config and cached catalog state
-- eSIM app store data
+- `http://localhost:5173`
+- `http://localhost:3000`
+- `http://localhost:4173`
+- `http://127.0.0.1:5173`
+- `http://127.0.0.1:3000`
+- `http://127.0.0.1:4173`
 
-## Local Development
+Default regex includes:
 
-Run from the repository root, not from inside a nested module folder.
+- `https://.*\.figmaiframepreview\.figma\.site`
 
-Unified backend:
+## 11. Docker
 
-```bash
-uvicorn backend.gateway.app:app --reload --host 0.0.0.0 --port 8000
-```
+The Dockerfile is `backend/Dockerfile` and expects build context at repo root.
 
-Standalone apps:
-
-```bash
-uvicorn backend.flights.wings.app:app --reload --host 0.0.0.0 --port 5050
-uvicorn backend.passenger_database.app:app --reload --host 0.0.0.0 --port 5060
-uvicorn backend.esim.esimaccess.app:app --reload --host 0.0.0.0 --port 5070
-uvicorn backend.communications.corevia_email.app:app --reload --host 0.0.0.0 --port 5080
-```
-
-Quick verification:
+### Build
 
 ```bash
-curl http://127.0.0.1:8000/health
-curl http://127.0.0.1:8000/__build
-open http://127.0.0.1:8000/docs
+docker build -f backend/Dockerfile -t the-backend .
 ```
 
-Quick OpenAPI export:
+### Run
 
 ```bash
-curl http://127.0.0.1:8000/openapi.json
+docker run --rm -p 8000:8000 --env-file .env the-backend
 ```
 
-## Deployment Guidance
+Container command:
 
-For Koyeb or a similar platform, prefer one unified service first:
+- `uvicorn backend.gateway.app:app --host 0.0.0.0 --port ${PORT:-8000}`
 
-```bash
-uvicorn backend.gateway.app:app --host 0.0.0.0 --port ${PORT:-8000}
-```
+## 12. Operational Notes
 
-If deploying with Docker, use:
+### Health semantics
 
-```text
-backend/Dockerfile
-```
+- Unified gateway `/health` returns `ok: false` when Wings credentials are missing.
+- Flights standalone behaves similarly.
+- Passenger DB, eSIMAccess, and Email health checks report service-specific status.
 
-Recommended default:
+### Gateway startup behavior
 
-- one service
-- one base URL
-- one OpenAPI surface
-- one main auth system
-- separate provider folders internally
+- Loads `.env` from detected project root.
+- Performs Wings configuration warning check.
+- Optionally prewarms eSIM cache if `ESIM_PREWARM_ON_STARTUP` is truthy.
 
-Split deployments only when there is a real operational reason:
+### Permissions-driven behavior
 
-- different scaling profile
-- different secret boundary
-- different uptime requirement
-- different team ownership
+- Flights booking can downgrade to pending when ticketing is disabled by schedule/policy.
+- eSIM order flow can return pending/manual mode based on provider policy (`sellable_mode` and schedule).
+- FIB and Email can be marked offline/disabled via permissions API.
 
-## Architecture Rules For Future Development
+## 13. Security Hardening Checklist
 
-Use these rules if you want changes to stay maintainable:
+- Set `AUTH_TOKEN_SECRET` (or `APP_SESSION_SECRET`) to a strong value.
+- Set `ESIM_ROOT_ADMIN_PASSWORD` and rotate it from default.
+- Review hardcoded eSIM app root admin phone handling.
+- Keep standalone public signup/forgot-password toggles disabled unless explicitly needed.
+- Restrict CORS to known frontend origins.
+- Use `SUPABASE_REQUIRED=true` in production if local fallback is not acceptable.
+- Confirm which gateway routes are intentionally public before internet exposure.
 
-- add new business areas as `backend/<domain>`
-- add provider-specific integrations as `backend/<domain>/<provider>`
-- keep the unified deployment wiring in `backend/gateway/app.py`
-- keep `backend/app.py` as compatibility only
-- keep cross-domain bootstrap code in `backend/core`
-- keep route files thin and push business logic into service/store modules
-- do not recreate a generic catch-all `services/` bucket
-- if a provider needs standalone deployment, add a local `app.py` under that provider folder
+## 14. Troubleshooting
 
-Recommended naming pattern:
+- `404 /api/esim/access/settings` on unified gateway is expected. That route exists on standalone eSIMAccess app, not unified gateway.
+- `401` means auth missing/invalid; `403` means authenticated but forbidden by role/service/api policy.
+- `503` on FIB/Email/eSIM often indicates permissions schedule/manual-mode restrictions or missing provider config.
+- Gateway `/health` being false usually indicates missing Wings config (`WINGS_AUTH_TOKEN` and endpoint/base URL settings).
 
-- payments: `backend/payments/fib`, future `backend/payments/qi`
-- flights: `backend/flights/wings`
-- eSIM: `backend/esim/esimaccess`, `backend/esim/oasis`
-- communications: `backend/communications/corevia_email`, `backend/communications/twilio_whatsapp`
+## 15. Pre-Deployment Checklist
 
-## Final Checklist Before A Frontend Connects
-
-- deploy `backend.gateway.app:app`
-- verify `/health`
-- verify `/docs`
-- verify `/openapi.json`
-- confirm `/api/auth/login` works with a real test account
-- decide whether the frontend uses the main auth system, the eSIM app auth system, or both
-- confirm CORS allows the frontend origin
-- confirm provider credentials are configured
-- confirm Supabase env vars are present if production persistence is required
-- confirm only intentionally public product routes are exposed without auth in your deployment
+- Start `backend.gateway.app:app`.
+- Verify `/health`, `/__build`, `/docs`, `/openapi.json`.
+- Verify `/api/auth/login` with a real account.
+- Verify required providers are configured (Wings, eSIM, FIB, SMTP).
+- Verify `SUPABASE_*` values and document table availability.
+- Verify CORS for production frontend origin.
+- Verify only intended public routes are accessible without bearer auth.
