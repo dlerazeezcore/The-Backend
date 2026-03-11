@@ -29,6 +29,7 @@ from backend.admin.subscriptions import (
     admin_update_subscription,
     grant_subscription_free,
     is_active,
+    list_active_addons_for_user,
     list_all_subscriptions,
     list_subscriptions_for_owner,
     update_addon_prices,
@@ -375,6 +376,41 @@ def create_router() -> APIRouter:
         if not ok or not updated:
             raise HTTPException(status_code=400, detail=message or "Failed.")
         return {"status": "ok", "subscription": updated}
+
+    @router.get("/subscriptions/api/check")
+    async def subscriptions_check(request: Request, addon: str = "") -> dict[str, Any]:
+        current_user = require_authenticated_user(request)
+        owner_id = effective_owner_user_id(current_user)
+        user_id = str(current_user.get("id") or "")
+        active_addons = list_active_addons_for_user(user_id=user_id, owner_user_id=owner_id)
+
+        addon_key = str(addon or "").strip()
+        if addon_key:
+            active = addon_key in active_addons
+            return {
+                "status": "ok",
+                "user_id": user_id,
+                "owner_user_id": owner_id,
+                "addon": addon_key,
+                "active": active,
+                "subscribed": active,
+                "has_subscription": active,
+                "is_active": active,
+                "active_addons": active_addons,
+            }
+
+        addons_map: dict[str, bool] = {}
+        for key in sorted((ADDONS or {}).keys()):
+            addons_map[str(key)] = str(key) in active_addons
+
+        return {
+            "status": "ok",
+            "user_id": user_id,
+            "owner_user_id": owner_id,
+            "active_addons": active_addons,
+            "addons": addons_map,
+            "has_any": bool(active_addons),
+        }
 
     @router.get("/admin/visa-catalog/api/list")
     async def admin_visa_catalog_list(request: Request) -> dict[str, Any]:
