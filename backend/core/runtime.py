@@ -17,7 +17,9 @@ DEFAULT_CORS_ORIGINS = [
     "http://127.0.0.1:4173",
 ]
 DEFAULT_CORS_ORIGIN_REGEX = [
-    r"https://.*\\.figmaiframepreview\\.figma\\.site",
+    r"https://.*\.figmaiframepreview\.figma\.site",
+    r"https://.*\.figma\.site",
+    r"https://.*\.makeproxy-m\.figma\.site",
 ]
 
 
