@@ -299,10 +299,39 @@ Protected config/checkout endpoints:
 - `GET /api/other-apis/fib`
 - `POST /api/other-apis/fib`
 - `POST /api/other-apis/fib/create-payment`
+- `GET /api/other-apis/fib/payments/{payment_id}/status`
+- `POST /api/other-apis/fib/payments/{payment_id}/cancel`
+- `POST /api/other-apis/fib/payments/{payment_id}/refund`
 
 eSIM app checkout endpoint:
 
 - `POST /api/esim-app/fib/create-payment`
+
+Public callback/return handlers:
+
+- `POST /fib/webhook`
+- `GET|POST /fib/return`
+
+Current backend FIB wrapper behavior:
+
+- obtains OAuth token internally using stored `client_id` and `client_secret`
+- calls `POST /protected/v1/payments` on FIB
+- currently accepts only `amount` and `description` from callers
+- currently sets `statusCallbackUrl` and `redirectUri` from `PUBLIC_BASE_URL`
+- currently uses fixed defaults for `expiresIn` (`PT1H`), `category` (`ECOMMERCE`), and `refundableFor` (`PT48H`)
+
+Official FIB docs reviewed (March 15, 2026):
+
+- docs URL: `https://documenter.getpostman.com/view/30814842/2sB2j68V73`
+- documented upstream flow: Authorization, Create Payment, Check Payment Status, Cancel Payment, Refund
+- documented base URL (stage): `https://fib.stage.fib.iq`
+- documented base URL (production): `https://fib.prod.fib.iq`
+
+Missing in this backend compared with official FIB API:
+
+- no caller-level support for optional create-payment fields from FIB docs (`statusCallbackUrl`, `redirectUri`, `expiresIn`, `refundableFor`, `category`)
+- no standardized internal status lifecycle mapped from FIB statuses (`PAID`, `UNPAID`, `DECLINED`, refund progression)
+- no non-`/api` alias route for create-payment (`/fib/create-payment`), so clients must use `/api/esim-app/fib/create-payment` or `/api/other-apis/fib/create-payment`
 
 ### Permissions
 

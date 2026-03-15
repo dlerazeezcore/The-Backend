@@ -20,7 +20,7 @@ def _fib_target_label(base_url: str) -> str:
     return host or "configured FIB host"
 
 
-def load_config() -> dict:
+def _load_config_raw() -> dict:
     def _load_local() -> dict:
         try:
             if CONFIG_PATH.exists():
@@ -40,9 +40,41 @@ def load_config() -> dict:
     return data
 
 
+def _redact_account(account: dict) -> dict:
+    row = account if isinstance(account, dict) else {}
+    return {
+        "id": str(row.get("id") or "").strip(),
+        "label": str(row.get("label") or "").strip(),
+        "client_id": str(row.get("client_id") or "").strip(),
+        "client_secret": "",
+        "has_client_secret": bool(str(row.get("client_secret") or "").strip()),
+        "base_url": str(row.get("base_url") or "").strip(),
+    }
+
+
+def _redact_config(cfg: dict) -> dict:
+    data = cfg if isinstance(cfg, dict) else {}
+    accounts = data.get("accounts") if isinstance(data.get("accounts"), list) else []
+    return {
+        "accounts": [_redact_account(a) for a in accounts if isinstance(a, dict)],
+        "active_account_id": str(data.get("active_account_id") or "").strip(),
+    }
+
+
+def load_config() -> dict:
+    return _redact_config(_load_config_raw())
+
+
 def save_config(cfg: dict) -> dict:
     if not isinstance(cfg, dict):
         cfg = {}
+    current = _load_config_raw()
+    existing_accounts = current.get("accounts") if isinstance(current.get("accounts"), list) else []
+    existing_by_id = {
+        str(row.get("id") or "").strip(): row
+        for row in existing_accounts
+        if isinstance(row, dict) and str(row.get("id") or "").strip()
+    }
     accounts = cfg.get("accounts")
     if not isinstance(accounts, list):
         accounts = []
@@ -53,16 +85,22 @@ def save_config(cfg: dict) -> dict:
         aid = str(a.get("id") or "").strip()
         if not aid:
             continue
+        prev = existing_by_id.get(aid) if isinstance(existing_by_id.get(aid), dict) else {}
+        incoming_secret = str(a.get("client_secret") or "").strip()
+        merged_secret = incoming_secret or str(prev.get("client_secret") or "").strip()
         norm_accounts.append(
             {
                 "id": aid,
                 "label": str(a.get("label") or ""),
                 "client_id": str(a.get("client_id") or ""),
-                "client_secret": str(a.get("client_secret") or ""),
+                "client_secret": merged_secret,
                 "base_url": str(a.get("base_url") or ""),
             }
         )
-    cfg["accounts"] = norm_accounts
+    out = {
+        "accounts": norm_accounts,
+        "active_account_id": "",
+    }
     raw_active = cfg.get("active_account_id", None)
     if raw_active is None:
         # If not provided, default to the first account.
@@ -71,18 +109,18 @@ def save_config(cfg: dict) -> dict:
         active = str(raw_active).strip()
         if active and not any(a.get("id") == active for a in norm_accounts):
             active = ""
-    cfg["active_account_id"] = active
+    out["active_account_id"] = active
 
     def _save_local(value: dict) -> None:
         CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
         CONFIG_PATH.write_text(json.dumps(value, indent=2, ensure_ascii=False), encoding="utf-8")
 
-    sb_save(doc_key="fib_config", value=cfg, local_saver=_save_local)
-    return cfg
+    sb_save(doc_key="fib_config", value=out, local_saver=_save_local)
+    return _redact_config(out)
 
 
 def _get_active_account() -> dict:
-    cfg = load_config()
+    cfg = _load_config_raw()
     accounts = cfg.get("accounts") or []
     active_id = str(cfg.get("active_account_id") or "").strip()
     account = next((a for a in accounts if str(a.get("id")) == active_id), None)
@@ -135,6 +173,47 @@ def _get_access_token(account: dict) -> str:
     if not token:
         raise ValueError("Missing access_token in FIB response.")
     return token
+
+
+def _request_protected(
+    *,
+    account: dict,
+    token: str,
+    method: str,
+    path: str,
+    expected_statuses: tuple[int, ...],
+) -> dict:
+    base_url = (account.get("base_url") or "").strip()
+    if not base_url:
+        raise ValueError("FIB base URL is missing.")
+    url = base_url.rstrip("/") + path
+    try:
+        resp = httpx.request(
+            method.upper(),
+            url,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {token}",
+            },
+            timeout=20,
+        )
+    except httpx.RequestError as exc:
+        target = _fib_target_label(base_url)
+        raise ValueError(f"Cannot reach FIB endpoint at {target}. Check Base URL and network access.") from exc
+
+    if resp.status_code not in expected_statuses:
+        raise ValueError(f"FIB request failed ({resp.status_code}): {resp.text}")
+
+    raw = (resp.text or "").strip()
+    if not raw:
+        return {}
+    try:
+        payload = resp.json()
+        if isinstance(payload, dict):
+            return payload
+        return {"data": payload}
+    except Exception:
+        return {"raw": raw}
 
 
 def create_payment(amount_iqd: int, description: str | None = None) -> dict:
@@ -208,3 +287,59 @@ def create_payment(amount_iqd: int, description: str | None = None) -> dict:
             "corporate": data.get("corporateAppLink"),
         },
     }
+
+
+def check_payment_status(payment_id: str) -> dict:
+    target = str(payment_id or "").strip()
+    if not target:
+        raise ValueError("payment_id is required.")
+    account = _get_active_account()
+    token = _get_access_token(account)
+    data = _request_protected(
+        account=account,
+        token=token,
+        method="GET",
+        path=f"/protected/v1/payments/{target}/status",
+        expected_statuses=(200,),
+    )
+    if "paymentId" not in data:
+        data["paymentId"] = target
+    return data
+
+
+def cancel_payment(payment_id: str) -> dict:
+    target = str(payment_id or "").strip()
+    if not target:
+        raise ValueError("payment_id is required.")
+    account = _get_active_account()
+    token = _get_access_token(account)
+    data = _request_protected(
+        account=account,
+        token=token,
+        method="POST",
+        path=f"/protected/v1/payments/{target}/cancel",
+        expected_statuses=(200, 202, 204),
+    )
+    out = {"paymentId": target, "status": "cancel_requested"}
+    if isinstance(data, dict):
+        out.update(data)
+    return out
+
+
+def refund_payment(payment_id: str) -> dict:
+    target = str(payment_id or "").strip()
+    if not target:
+        raise ValueError("payment_id is required.")
+    account = _get_active_account()
+    token = _get_access_token(account)
+    data = _request_protected(
+        account=account,
+        token=token,
+        method="POST",
+        path=f"/protected/v1/payments/{target}/refund",
+        expected_statuses=(200, 202, 204),
+    )
+    out = {"paymentId": target, "status": "refund_requested"}
+    if isinstance(data, dict):
+        out.update(data)
+    return out
