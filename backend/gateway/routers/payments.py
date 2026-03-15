@@ -9,6 +9,8 @@ from backend.payments.fib.service import (
     cancel_payment as fib_cancel_payment,
     check_payment_status as fib_check_payment_status,
     create_payment as fib_create_payment,
+    extract_account_selector as fib_extract_account_selector,
+    extract_create_payment_options as fib_extract_create_payment_options,
     load_config as load_fib_config,
     refund_payment as fib_refund_payment,
     save_config as save_fib_config,
@@ -56,7 +58,13 @@ async def fib_create_payment_endpoint(request: Request, payload: dict):
         if amount <= 0:
             raise ValueError("Amount must be greater than 0.")
         description = payload.get("description") or "Payment"
-        data = fib_create_payment(amount, description)
+        selector = fib_extract_account_selector(payload=payload, headers=request.headers, query_params=request.query_params)
+        data = fib_create_payment(
+            amount,
+            description,
+            options=fib_extract_create_payment_options(payload),
+            selector=selector,
+        )
         return data
     except HTTPException:
         raise
@@ -69,7 +77,8 @@ async def fib_payment_status_endpoint(request: Request, payment_id: str):
     require_super_admin_request(request)
     try:
         _ensure_fib_enabled()
-        return fib_check_payment_status(payment_id)
+        selector = fib_extract_account_selector(headers=request.headers, query_params=request.query_params)
+        return fib_check_payment_status(payment_id, selector=selector)
     except HTTPException:
         raise
     except Exception as e:
@@ -81,7 +90,8 @@ async def fib_payment_cancel_endpoint(request: Request, payment_id: str):
     require_super_admin_request(request)
     try:
         _ensure_fib_enabled()
-        return fib_cancel_payment(payment_id)
+        selector = fib_extract_account_selector(headers=request.headers, query_params=request.query_params)
+        return fib_cancel_payment(payment_id, selector=selector)
     except HTTPException:
         raise
     except Exception as e:
@@ -93,7 +103,8 @@ async def fib_payment_refund_endpoint(request: Request, payment_id: str):
     require_super_admin_request(request)
     try:
         _ensure_fib_enabled()
-        return fib_refund_payment(payment_id)
+        selector = fib_extract_account_selector(headers=request.headers, query_params=request.query_params)
+        return fib_refund_payment(payment_id, selector=selector)
     except HTTPException:
         raise
     except Exception as e:
@@ -114,7 +125,8 @@ async def fib_webhook_endpoint(request: Request):
         content={
             "status": "accepted",
             "payment_id": payment_id,
-            "payment_status": payment_status,
+            "payment_status": body.get("status"),
+            "payment_status_label": payment_status,
         },
     )
 
