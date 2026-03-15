@@ -124,19 +124,8 @@ def save_fib_configuration(payload: dict[str, Any]) -> dict[str, Any]:
     return data if isinstance(data, dict) else {"accounts": [], "active_account_id": ""}
 
 
-def create_fib_payment(
-    amount_iqd: int,
-    description: str,
-    *,
-    options: dict[str, Any] | None = None,
-    selector: dict[str, str] | None = None,
-) -> dict[str, Any]:
-    return fib_create_payment(
-        int(amount_iqd),
-        str(description or "Payment").strip() or "Payment",
-        options=options,
-        selector=selector,
-    )
+def create_fib_payment(amount_iqd: int, description: str) -> dict[str, Any]:
+    return fib_create_payment(int(amount_iqd), str(description or "Payment").strip() or "Payment")
 
 
 def load_email_configuration() -> dict[str, Any]:

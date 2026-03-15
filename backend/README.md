@@ -2,7 +2,7 @@
 
 Backend services for The Book/The Backend product suite.
 
-This README is code-verified against the current repository state on March 15, 2026.
+This README is code-verified against the current repository state on March 11, 2026.
 
 ## 1. Overview
 
@@ -28,7 +28,7 @@ The standalone apps exist for domain-level split deployment when needed:
 | Flights (Wings) | `backend/gateway/routers/flights.py`, `backend/flights/wings/*` | Availability + booking over Wings provider |
 | eSIM unified | `backend/gateway/routers/esim.py`, `backend/esim/oasis/*`, `backend/esim/esimaccess/*` | Unified eSIM catalog, quote, order, and provider operations |
 | eSIM app | `backend/gateway/routers/esim_app.py`, `backend/gateway/esim_app_store.py` | Consumer app flow with local token pattern |
-| Payments (FIB) | `backend/gateway/routers/payments.py`, `backend/payments/fib/service.py` | FIB config + create/status/cancel/refund payment flow |
+| Payments (FIB) | `backend/gateway/routers/payments.py`, `backend/payments/fib/service.py` | FIB config + payment link creation |
 | Notifications / Email | `backend/gateway/routers/notifications.py`, `backend/communications/corevia_email/*` | Email config and send operations |
 | Permissions | `backend/gateway/routers/permissions.py`, `backend/gateway/permissions_store.py` | Service/API/provider toggles and schedules |
 | Passenger database | `backend/passenger_database/*` | Profiles, members, member history |
@@ -314,85 +314,24 @@ Public callback/return handlers:
 
 Current backend FIB wrapper behavior:
 
-- defaults the Fib environment to production (`https://fib.prod.fib.iq`) when no custom `FIB_BASE_URL` or saved account base URL is provided
 - obtains OAuth token internally using stored `client_id` and `client_secret`
-- can select different saved Fib credentials per frontend while keeping the same API endpoints
-- supports frontend account selection by `X-Fib-Account-Id`, `X-Fib-Frontend-Key`, request/body `fib_account_id` / `account_id`, request/body `fib_frontend_key` / `frontend_key`, or configured `Origin` / frontend host matching
-- remembers which Fib account created each `payment_id`, so later status/cancel/refund calls can resolve the same account automatically
 - calls `POST /protected/v1/payments` on FIB
-- accepts the documented create-payment option fields from callers: `statusCallbackUrl`, `redirectUri`, `expiresIn`, `refundableFor`, and `category`
-- also accepts snake_case aliases for the same fields: `status_callback_url`, `redirect_uri`, `expires_in`, `refundable_for`
-- defaults `statusCallbackUrl` to `PUBLIC_BASE_URL + /fib/webhook` and `redirectUri` to `PUBLIC_BASE_URL + /fib/return` when callers omit them
-- omits `expiresIn`, `refundableFor`, and `category` unless callers explicitly provide them
-- validates `description` length (`<= 50`) and validates `category` against the documented FIB enum
-- returns `202 Accepted` from `/fib/webhook` and preserves either a plain status string or a richer status payload from FIB callbacks
+- currently accepts only `amount` and `description` from callers
+- currently sets `statusCallbackUrl` and `redirectUri` from `PUBLIC_BASE_URL`
+- currently uses fixed defaults for `expiresIn` (`PT1H`), `category` (`ECOMMERCE`), and `refundableFor` (`PT48H`)
 
 Official FIB docs reviewed (March 15, 2026):
 
 - docs URL: `https://documenter.getpostman.com/view/30814842/2sB2j68V73`
-- Postman collection metadata publish date: `2025-05-04`
+- documented upstream flow: Authorization, Create Payment, Check Payment Status, Cancel Payment, Refund
 - documented base URL (stage): `https://fib.stage.fib.iq`
 - documented base URL (production): `https://fib.prod.fib.iq`
 
-Verified against the official docs section by section:
+Missing in this backend compared with official FIB API:
 
-- Introduction / Api Reference: backend matches the documented REST + JSON model and uses OAuth2 client-credentials internally before protected calls.
-- Environments: backend supports both documented FIB hosts through stored config or `FIB_BASE_URL`; stage and production URLs are not hardcoded in route logic.
-- Environments default: this repository now defaults Fib to production; use `https://fib.stage.fib.iq` only when you intentionally configure stage for testing.
-- Requests / Authorization: backend posts form-encoded credentials to `/auth/realms/fib-online-shop/protocol/openid-connect/token`, then forwards the returned bearer token to protected FIB endpoints.
-- Create Payment: backend now supports the required `monetaryValue.amount` flow plus the documented optional fields `statusCallbackUrl`, `description`, `redirectUri`, `expiresIn`, `refundableFor`, and `category`.
-- Check Payment Status (Required): backend proxies `GET /protected/v1/payments/{payment_id}/status` and returns the upstream JSON, including documented statuses such as `UNPAID`, `PAID`, `DECLINED`, plus the refund lifecycle examples `REFUND_REQUESTED` and `REFUNDED`.
-- Cancel Payment: backend proxies `POST /protected/v1/payments/{payment_id}/cancel` and tolerates the documented `204 No Content` response.
-- Refund: backend proxies `POST /protected/v1/payments/{payment_id}/refund` and tolerates the documented `202 Accepted` response; callers should poll the status endpoint afterward as described in the FIB docs.
-
-Behavior notes that still matter to integrators:
-
-- frontend apps should identify which Fib account to use; they should not send `client_secret` to the backend
-- saved Fib accounts can include frontend routing metadata such as `frontend_key` / `frontend_keys`, `frontend_origin` / `frontend_origins`, and `frontend_host` / `frontend_hosts`
-- the backend does not pre-validate business rules such as “refund only for `PAID` payments within the last 24 hours”; it delegates those checks to FIB and returns the upstream error if FIB rejects the request
-- there is still no public alias like `/fib/create-payment`; checkout callers should use `/api/other-apis/fib/create-payment` or `/api/esim-app/fib/create-payment`
-
-Example multi-frontend Fib config payload for `POST /api/other-apis/fib`:
-
-```json
-{
-  "active_account_id": "fib-main-prod",
-  "accounts": [
-    {
-      "id": "fib-main-prod",
-      "label": "Main Website Production",
-      "client_id": "main_website_production_client_id",
-      "client_secret": "main_website_production_client_secret",
-      "base_url": "https://fib.prod.fib.iq",
-      "frontend_key": "main-web",
-      "frontend_keys": ["main-web", "website"],
-      "frontend_origin": "https://www.example.com",
-      "frontend_origins": ["https://www.example.com", "https://example.com"],
-      "frontend_host": "www.example.com",
-      "frontend_hosts": ["www.example.com", "example.com"]
-    },
-    {
-      "id": "fib-esim-prod",
-      "label": "eSIM App Production",
-      "client_id": "esim_app_production_client_id",
-      "client_secret": "esim_app_production_client_secret",
-      "base_url": "https://fib.prod.fib.iq",
-      "frontend_key": "esim-app",
-      "frontend_keys": ["esim-app", "mobile-app"],
-      "frontend_origin": "https://app.example.com",
-      "frontend_origins": ["https://app.example.com"],
-      "frontend_host": "app.example.com",
-      "frontend_hosts": ["app.example.com"]
-    }
-  ]
-}
-```
-
-Example frontend request selectors:
-
-- send `X-Fib-Account-Id: fib-main-prod` when you want an exact account match
-- send `X-Fib-Frontend-Key: esim-app` when you want the backend to resolve by frontend key
-- or rely on the browser/app origin and host matching the configured account metadata above
+- no caller-level support for optional create-payment fields from FIB docs (`statusCallbackUrl`, `redirectUri`, `expiresIn`, `refundableFor`, `category`)
+- no standardized internal status lifecycle mapped from FIB statuses (`PAID`, `UNPAID`, `DECLINED`, refund progression)
+- no non-`/api` alias route for create-payment (`/fib/create-payment`), so clients must use `/api/esim-app/fib/create-payment` or `/api/other-apis/fib/create-payment`
 
 ### Permissions
 
@@ -580,11 +519,7 @@ The backend uses Supabase document storage with local JSON fallback.
 | --- | --- | --- |
 | `users` | `backend/auth/service.py` via `supabase/auth/users_repo.py` | `backend/data/users.json` |
 | `permissions` | `backend/gateway/permissions_store.py` | `backend/gateway/permissions.json` |
-| `fib_accounts` | `backend/payments/fib/service.py` via `supabase/fib/fib_config_repo.py` | `backend/payments/fib/accounts.json` |
-| `fib_frontend_routes` | `backend/payments/fib/service.py` via `supabase/fib/fib_config_repo.py` | `backend/payments/fib/frontend_routes.json` |
-| `fib_settings` | `backend/payments/fib/service.py` via `supabase/fib/fib_config_repo.py` | `backend/payments/fib/settings.json` |
-| `fib_payment_accounts` | `backend/payments/fib/service.py` via `supabase/fib/fib_config_repo.py` | `backend/payments/fib/payment_accounts.json` |
-| `fib_config` (legacy compatibility read path) | `backend/payments/fib/service.py` | `backend/payments/fib/config.json` |
+| `fib_config` | `backend/payments/fib/service.py` | `backend/payments/fib/config.json` |
 | `email_config` | `backend/communications/corevia_email/service.py` | `backend/communications/corevia_email/config.json` |
 | `esim_oasis_config` | `backend/esim/oasis/service.py` | `backend/esim/oasis/config.json` |
 | `esim_app_store` | `backend/gateway/esim_app_store.py` | `backend/data/esim_app_store.json` |

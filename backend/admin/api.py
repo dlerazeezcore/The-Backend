@@ -43,12 +43,6 @@ from backend.auth.service import (
     is_super_admin,
     load_users,
 )
-from backend.payments.fib.service import (
-    extract_account_selector as fib_extract_account_selector,
-    extract_create_payment_options as fib_extract_create_payment_options,
-)
-
-
 def _to_number(value: Any, default: float = 0.0) -> float:
     try:
         if value is None:
@@ -181,13 +175,7 @@ def create_router() -> APIRouter:
             raise HTTPException(status_code=400, detail="amount must be greater than zero.")
         description = str(payload.get("description") or "Payment").strip() or "Payment"
         try:
-            selector = fib_extract_account_selector(payload=payload, headers=request.headers, query_params=request.query_params)
-            return create_fib_payment(
-                amount,
-                description,
-                options=fib_extract_create_payment_options(payload),
-                selector=selector,
-            )
+            return create_fib_payment(amount, description)
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 

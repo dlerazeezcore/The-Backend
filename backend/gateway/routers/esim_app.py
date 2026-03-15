@@ -40,11 +40,7 @@ from backend.esim.esimaccess.service import (
     order_profiles as esim_access_order_profiles,
     query_profiles as esim_access_query_profiles,
 )
-from backend.payments.fib.service import (
-    create_payment as fib_create_payment,
-    extract_account_selector as fib_extract_account_selector,
-    extract_create_payment_options as fib_extract_create_payment_options,
-)
+from backend.payments.fib.service import create_payment as fib_create_payment
 
 router = APIRouter()
 ROOT_ADMIN_PASSWORD = os.getenv("ESIM_ROOT_ADMIN_PASSWORD", "StrongPass123")
@@ -1180,20 +1176,14 @@ async def destinations_popular_clear():
 
 
 @router.post("/api/esim-app/fib/create-payment")
-async def create_fib_payment(request: Request, payload: Dict[str, Any]):
+async def create_fib_payment(payload: Dict[str, Any]):
     try:
         _ensure_fib_checkout_online()
         amount = int(payload.get("amount") or 0)
         if amount <= 0:
             raise HTTPException(status_code=400, detail="amount must be greater than zero.")
         description = str(payload.get("description") or "Payment").strip() or "Payment"
-        selector = fib_extract_account_selector(payload=payload, headers=request.headers, query_params=request.query_params)
-        return fib_create_payment(
-            amount,
-            description,
-            options=fib_extract_create_payment_options(payload),
-            selector=selector,
-        )
+        return fib_create_payment(amount, description)
     except HTTPException:
         raise
     except Exception as exc:
