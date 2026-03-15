@@ -1175,8 +1175,7 @@ async def destinations_popular_clear():
     return {"success": True, "data": []}
 
 
-@router.post("/api/esim-app/fib/create-payment")
-async def create_fib_payment(payload: Dict[str, Any]):
+async def _create_fib_payment(payload: Dict[str, Any]):
     try:
         _ensure_fib_checkout_online()
         amount = int(payload.get("amount") or 0)
@@ -1188,6 +1187,16 @@ async def create_fib_payment(payload: Dict[str, Any]):
         raise
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/api/esim-app/fib/create-payment")
+async def create_fib_payment(payload: Dict[str, Any]):
+    return await _create_fib_payment(payload)
+
+
+@router.post("/other-apis-data/fib/create-payment")
+async def create_fib_payment_legacy(payload: Dict[str, Any]):
+    return await _create_fib_payment(payload)
 
 
 @router.get("/api/esim-app/countries/{country_code}/plans")
