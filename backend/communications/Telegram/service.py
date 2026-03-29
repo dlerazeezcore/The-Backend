@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import mimetypes
 from typing import Any
 
 import requests
@@ -76,6 +77,13 @@ def _post_telegram(method: str, payload: dict[str, Any]) -> dict[str, Any]:
         raise RuntimeError(f"Telegram API returned error: {body}")
     result = body.get("result")
     return result if isinstance(result, dict) else {}
+
+
+def _telegram_file_download_url(file_path: str) -> str:
+    token = _telegram_bot_token()
+    if not token:
+        raise RuntimeError("TELEGRAM_BOT_TOKEN is missing.")
+    return f"https://api.telegram.org/file/bot{token}/{file_path.lstrip('/')}"
 
 
 def validate_telegram_webhook_secret(header_value: str | None) -> bool:
@@ -227,6 +235,37 @@ def _sender_name(message: dict[str, Any]) -> str:
     return _clean_text(sender.get("username")) or "Support"
 
 
+def _extract_telegram_photo_attachment(message: dict[str, Any], conversation_id: str) -> dict[str, Any] | None:
+    photo_sizes = message.get("photo") if isinstance(message.get("photo"), list) else []
+    if not photo_sizes:
+        return None
+    candidates = [row for row in photo_sizes if isinstance(row, dict) and _clean_text(row.get("file_id"))]
+    if not candidates:
+        return None
+    chosen = max(candidates, key=lambda row: int(row.get("file_size") or 0))
+    file_id = _clean_text(chosen.get("file_id"))
+    if not file_id:
+        return None
+
+    file_meta = _post_telegram("getFile", {"file_id": file_id})
+    file_path = _clean_text(file_meta.get("file_path"))
+    if not file_path:
+        return None
+
+    response = requests.get(_telegram_file_download_url(file_path), timeout=_telegram_timeout_seconds())
+    if response.status_code >= 400:
+        raise RuntimeError(f"Telegram file download failed ({response.status_code}): {response.text[:300]}")
+
+    guessed_content_type = mimetypes.guess_type(file_path)[0] or "image/jpeg"
+    filename = file_path.rsplit("/", 1)[-1] or "telegram-photo.jpg"
+    return supabase_repo.upload_attachment(
+        conversation_id=conversation_id,
+        filename=filename,
+        content=response.content,
+        content_type=guessed_content_type,
+    )
+
+
 def handle_telegram_update(update: dict[str, Any]) -> dict[str, Any]:
     message = update.get("message") if isinstance(update.get("message"), dict) else None
     if not isinstance(message, dict):
@@ -255,14 +294,19 @@ def handle_telegram_update(update: dict[str, Any]) -> dict[str, Any]:
         if not mapping:
             return {"status": "ignored", "reason": "No support conversation mapping found for Telegram reply."}
 
-    text = _telegram_message_text(message)
-    if not text:
-        return {"status": "ignored", "reason": "Only text replies are supported in v1."}
-
     conversation_id = _clean_text(mapping.get("conversation_id"))
     telegram_message_id = message.get("message_id")
     if not conversation_id or not isinstance(telegram_message_id, int):
         return {"status": "ignored", "reason": "Telegram reply is missing required identifiers."}
+    text = _telegram_message_text(message)
+    attachment = _extract_telegram_photo_attachment(message, conversation_id=conversation_id)
+    attachment_meta = _attachment_metadata(attachment)
+    if not text and not attachment_meta:
+        return {"status": "ignored", "reason": "Only text or photo replies are supported."}
+
+    metadata: dict[str, Any] = {"source": "telegram"}
+    if attachment_meta:
+        metadata["attachment"] = attachment_meta
 
     saved = supabase_repo.create_message(
         conversation_id=conversation_id,
@@ -273,7 +317,7 @@ def handle_telegram_update(update: dict[str, Any]) -> dict[str, Any]:
         telegram_chat_id=chat_id,
         telegram_message_id=telegram_message_id,
         reply_to_telegram_message_id=reply_to_message_id if isinstance(reply_to_message_id, int) else None,
-        metadata={"source": "telegram"},
+        metadata=metadata,
     )
     supabase_repo.store_telegram_map(
         conversation_id=conversation_id,
@@ -282,6 +326,10 @@ def handle_telegram_update(update: dict[str, Any]) -> dict[str, Any]:
         telegram_message_id=telegram_message_id,
         telegram_thread_id=message.get("message_thread_id") if isinstance(message.get("message_thread_id"), int) else None,
         direction="from_support",
+    )
+    supabase_repo.touch_conversation(
+        conversation_id,
+        latest_customer_message_preview=_preview(text or f"[image] {attachment_meta.get('name') or 'attachment'}"),
     )
     supabase_repo.touch_conversation(conversation_id)
     return {
