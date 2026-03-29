@@ -193,9 +193,10 @@ def _normalize_access_item(item: dict) -> dict | None:
     if not isinstance(item, dict):
         return None
     package_code = str(item.get("packageCode") or "").strip()
-    if not package_code:
+    plan_slug = str(item.get("slug") or "").strip()
+    if not package_code and not plan_slug:
         return None
-    plan_name = str(item.get("name") or package_code).strip()
+    plan_name = str(item.get("name") or package_code or plan_slug).strip()
     iso_list = _parse_location_codes(item.get("location"))
     country_name_hint = ""
     if len(iso_list) == 1:
@@ -206,16 +207,19 @@ def _normalize_access_item(item: dict) -> dict | None:
     data_amount_mb = int(round(volume_bytes / (1024.0 * 1024.0))) if volume_bytes > 0 else 0
     duration = _to_int(item.get("duration"), default=0) or _to_int(item.get("unusedValidTime"), default=0)
     data_type = _to_int(item.get("dataType"), default=1)
-    unlimited = data_type == 4
+    daily_plan = data_type == 2 or "/day" in plan_name.lower() or "daily" in plan_slug.lower()
+    unlimited = data_type == 4 or daily_plan
     provider_price_raw = _to_int(item.get("price"), default=0)
     price_minor = _access_price_to_usd_minor(provider_price_raw)
+    bundle_ref = plan_slug if daily_plan and plan_slug else package_code or plan_slug
 
     return {
-        "bundleName": f"ea::{package_code}",
+        "bundleName": f"ea::{bundle_ref}",
         "description": plan_name,
         "dataAmountMb": data_amount_mb,
         "durationDays": duration,
         "unlimited": unlimited,
+        "allowanceMode": "per_day" if daily_plan else "total",
         "price": {
             "finalMinor": price_minor,
             "currency": str(item.get("currencyCode") or "USD").upper(),
@@ -223,6 +227,8 @@ def _normalize_access_item(item: dict) -> dict | None:
         "countries": countries,
         "provider": "esim_access",
         "providerBundleCode": package_code,
+        "providerSlug": plan_slug,
+        "providerDataType": data_type,
         "provider_price_raw": provider_price_raw,
         "provider_price_minor": price_minor,
     }
@@ -231,19 +237,31 @@ def _normalize_access_item(item: dict) -> dict | None:
 def _load_access_catalog() -> list[dict]:
     if not esim_access_is_configured():
         return []
-    response = esim_access_list_packages(
-        {"locationCode": "", "type": "BASE", "packageCode": "", "slug": "", "iccid": ""}
-    )
-    if not bool(response.get("success")):
-        raise ValueError(response.get("errorMsg") or response.get("errorCode") or "eSIMAccess package query failed.")
-    obj = response.get("obj") if isinstance(response.get("obj"), dict) else {}
-    package_list = obj.get("packageList") if isinstance(obj, dict) else []
-    if not isinstance(package_list, list):
-        return []
     out: list[dict] = []
-    for package in package_list:
-        normalized = _normalize_access_item(package)
-        if normalized:
+    seen_keys: set[str] = set()
+    payload = {"locationCode": "", "type": "BASE", "packageCode": "", "slug": "", "iccid": ""}
+    for body in (payload, {**payload, "dataType": 2}):
+        response = esim_access_list_packages(body)
+        if not bool(response.get("success")):
+            raise ValueError(response.get("errorMsg") or response.get("errorCode") or "eSIMAccess package query failed.")
+        obj = response.get("obj") if isinstance(response.get("obj"), dict) else {}
+        package_list = obj.get("packageList") if isinstance(obj, dict) else []
+        if not isinstance(package_list, list):
+            continue
+        for package in package_list:
+            normalized = _normalize_access_item(package)
+            if not normalized:
+                continue
+            key = "|".join(
+                [
+                    str(normalized.get("providerBundleCode") or "").strip(),
+                    str(normalized.get("providerSlug") or "").strip(),
+                    str(normalized.get("allowanceMode") or "").strip(),
+                ]
+            )
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
             out.append(normalized)
     return out
 
@@ -868,10 +886,14 @@ async def _complete_purchase(payload: Dict[str, Any], request: Request | None = 
 
     quantity = 1
     package_code = str(bundle.get("providerBundleCode") or "").strip()
-    if not package_code and bundle_name.startswith("ea::"):
+    plan_slug = str(bundle.get("providerSlug") or "").strip()
+    allowance_mode = str(bundle.get("allowanceMode") or "total").strip().lower()
+    if not package_code and bundle_name.startswith("ea::") and allowance_mode != "per_day":
         package_code = bundle_name.split("ea::", 1)[1]
-    if not package_code:
+    if allowance_mode != "per_day" and not package_code:
         raise HTTPException(status_code=400, detail="Invalid eSIMAccess package code.")
+    if allowance_mode == "per_day" and not plan_slug:
+        raise HTTPException(status_code=400, detail="Invalid eSIMAccess day-pass slug.")
 
     unit_price = _to_int(bundle.get("provider_price_raw"), default=0)
     if unit_price <= 0:
@@ -881,10 +903,25 @@ async def _complete_purchase(payload: Dict[str, Any], request: Request | None = 
     if unit_price <= 0:
         raise HTTPException(status_code=400, detail="Unable to resolve eSIMAccess package price.")
 
+    period_num = 1
+    if allowance_mode == "per_day":
+        period_num = max(
+            1,
+            _to_int(
+                body.get("periodNum") or body.get("period_num") or body.get("durationDays") or bundle.get("durationDays"),
+                default=1,
+            ),
+        )
+    order_item = {"count": quantity, "price": unit_price}
+    if allowance_mode == "per_day":
+        order_item["slug"] = plan_slug
+        order_item["periodNum"] = period_num
+    else:
+        order_item["packageCode"] = package_code
     order_payload = {
         "transactionId": idempotency_key,
-        "amount": unit_price * quantity,
-        "packageInfoList": [{"packageCode": package_code, "count": quantity, "price": unit_price}],
+        "amount": unit_price * quantity * period_num,
+        "packageInfoList": [order_item],
     }
     try:
         order_resp = esim_access_order_profiles(order_payload)

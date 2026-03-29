@@ -142,9 +142,10 @@ def _normalize_access_item(item: dict[str, Any]) -> dict[str, Any] | None:
     if not isinstance(item, dict):
         return None
     package_code = str(item.get("packageCode") or "").strip()
-    if not package_code:
+    plan_slug = str(item.get("slug") or "").strip()
+    if not package_code and not plan_slug:
         return None
-    plan_name = str(item.get("name") or package_code).strip()
+    plan_name = str(item.get("name") or package_code or plan_slug).strip()
     iso_list = _parse_location_codes(item.get("location"))
     countries = [{"iso": iso, "name": iso, "region": ""} for iso in iso_list]
     volume_bytes = _to_int(item.get("volume"), default=0)
@@ -153,15 +154,18 @@ def _normalize_access_item(item: dict[str, Any]) -> dict[str, Any] | None:
     if duration <= 0:
         duration = _to_int(item.get("unusedValidTime"), default=0)
     data_type = _to_int(item.get("dataType"), default=1)
-    unlimited = data_type == 4
+    daily_plan = data_type == 2 or "/day" in plan_name.lower() or "daily" in plan_slug.lower()
+    unlimited = data_type == 4 or daily_plan
     provider_price_raw = _to_int(item.get("price"), default=0)
     price_minor = _access_price_to_usd_minor(provider_price_raw)
+    bundle_ref = plan_slug if daily_plan and plan_slug else package_code or plan_slug
     return {
-        "bundleName": f"ea::{package_code}",
+        "bundleName": f"ea::{bundle_ref}",
         "description": plan_name,
         "dataAmountMb": data_amount_mb,
         "durationDays": duration,
         "unlimited": unlimited,
+        "allowanceMode": "per_day" if daily_plan else "total",
         "price": {
             "finalMinor": price_minor,
             "currency": str(item.get("currencyCode") or "USD").upper(),
@@ -169,7 +173,8 @@ def _normalize_access_item(item: dict[str, Any]) -> dict[str, Any] | None:
         "countries": countries,
         "provider": "esimaccess",
         "providerBundleCode": package_code,
-        "providerSlug": str(item.get("slug") or "").strip(),
+        "providerSlug": plan_slug,
+        "providerDataType": data_type,
         "provider_price_minor": price_minor,
         "provider_price_raw": provider_price_raw,
         "provider_currency": str(item.get("currencyCode") or "USD").upper(),
@@ -303,34 +308,54 @@ def _fetch_access_packages(location_code: str = "") -> tuple[dict[str, Any], lis
         "slug": "",
         "iccid": "",
     }
-    try:
-        response = esimaccess_list_packages(payload)
-    except ValueError as exc:
-        msg = str(exc)
-        if "Missing ESIMACCESS_ACCESS_CODE" in msg:
+    package_list: list[dict[str, Any]] = []
+    raw_responses: list[dict[str, Any]] = []
+    seen_keys: set[str] = set()
+    for body in (payload, {**payload, "dataType": 2}):
+        try:
+            response = esimaccess_list_packages(body)
+        except ValueError as exc:
+            msg = str(exc)
+            if "Missing ESIMACCESS_ACCESS_CODE" in msg:
+                raise HTTPException(
+                    status_code=503,
+                    detail="eSIM supplier is not configured. Set ESIMACCESS_ACCESS_CODE in backend environment.",
+                ) from exc
+            raise HTTPException(status_code=503, detail=f"eSIM supplier unavailable: {msg}") from exc
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=f"eSIM supplier unavailable: {exc}") from exc
+        if not _is_access_success(response):
             raise HTTPException(
-                status_code=503,
-                detail="eSIM supplier is not configured. Set ESIMACCESS_ACCESS_CODE in backend environment.",
-            ) from exc
-        raise HTTPException(status_code=503, detail=f"eSIM supplier unavailable: {msg}") from exc
-    except Exception as exc:
-        raise HTTPException(status_code=503, detail=f"eSIM supplier unavailable: {exc}") from exc
-    if not _is_access_success(response):
-        raise HTTPException(
-            status_code=400,
-            detail=response.get("errorMsg") or response.get("errorCode") or "eSIMAccess package query failed.",
-        )
-    obj = response.get("obj") if isinstance(response.get("obj"), dict) else {}
-    package_list = obj.get("packageList") if isinstance(obj, dict) else []
-    if not isinstance(package_list, list):
-        package_list = []
-    return response, package_list
+                status_code=400,
+                detail=response.get("errorMsg") or response.get("errorCode") or "eSIMAccess package query failed.",
+            )
+        raw_responses.append(response)
+        obj = response.get("obj") if isinstance(response.get("obj"), dict) else {}
+        rows = obj.get("packageList") if isinstance(obj, dict) else []
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            key = "|".join(
+                [
+                    str(row.get("packageCode") or "").strip(),
+                    str(row.get("slug") or "").strip(),
+                    str(_to_int(row.get("dataType"), default=1)),
+                ]
+            )
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            package_list.append(row)
+    return {"success": True, "obj": {"packageList": package_list}, "responses": raw_responses}, package_list
 
 
 def _resolve_package_for_order(payload: dict[str, Any]) -> tuple[str, str, int, dict[str, Any] | None]:
     body = payload if isinstance(payload, dict) else {}
     bundle_name = str(body.get("bundleName") or "").strip()
     package_code = str(body.get("packageCode") or "").strip()
+    plan_slug = str(body.get("slug") or body.get("providerSlug") or "").strip()
     location_code = str(
         body.get("locationCode")
         or body.get("countryIso")
@@ -338,26 +363,43 @@ def _resolve_package_for_order(payload: dict[str, Any]) -> tuple[str, str, int, 
         or ""
     ).strip().upper()
 
-    if not package_code and bundle_name.startswith("ea::"):
+    if not package_code and bundle_name.startswith("ea::") and not plan_slug:
         package_code = bundle_name.split("ea::", 1)[1].strip()
 
     matched_package: dict[str, Any] | None = None
-    if (not package_code) or (not _to_int(body.get("provider_price_raw"), default=0)):
+    if (not package_code and not plan_slug) or (not _to_int(body.get("provider_price_raw"), default=0)):
         _, package_list = _fetch_access_packages(location_code=location_code)
         for row in package_list:
             if not isinstance(row, dict):
                 continue
             row_code = str(row.get("packageCode") or "").strip()
+            row_slug = str(row.get("slug") or "").strip()
             row_name = str(row.get("name") or "").strip()
-            if package_code and row_code == package_code:
-                matched_package = row
-                break
-            if bundle_name and (f"ea::{row_code}" == bundle_name or row_name == bundle_name):
+            normalized = _normalize_access_item(row)
+            normalized_bundle = str(normalized.get("bundleName") or "").strip() if isinstance(normalized, dict) else ""
+            if plan_slug and row_slug == plan_slug:
                 matched_package = row
                 package_code = row_code
                 break
+            if package_code and row_code == package_code:
+                matched_package = row
+                break
+            if bundle_name and (normalized_bundle == bundle_name or row_name == bundle_name):
+                matched_package = row
+                package_code = row_code
+                plan_slug = row_slug
+                break
 
-    if not package_code:
+    normalized_match = _normalize_access_item(matched_package) if isinstance(matched_package, dict) else None
+    allowance_mode = str(body.get("allowanceMode") or "").strip().lower()
+    if not allowance_mode and isinstance(normalized_match, dict):
+        allowance_mode = str(normalized_match.get("allowanceMode") or "").strip().lower()
+
+    if allowance_mode == "per_day" and not plan_slug and isinstance(normalized_match, dict):
+        plan_slug = str(normalized_match.get("providerSlug") or "").strip()
+    if allowance_mode == "per_day" and not plan_slug:
+        raise HTTPException(status_code=400, detail="bundleName or slug is required for eSIMAccess day-pass order.")
+    if allowance_mode != "per_day" and not package_code:
         raise HTTPException(status_code=400, detail="bundleName or packageCode is required for eSIMAccess order.")
 
     unit_price_raw = _to_int(body.get("provider_price_raw"), default=0)
@@ -378,7 +420,20 @@ def _resolve_package_for_order(payload: dict[str, Any]) -> tuple[str, str, int, 
     if unit_price_raw <= 0:
         raise HTTPException(status_code=400, detail="Unable to resolve eSIMAccess package price.")
 
-    final_bundle_name = bundle_name or f"ea::{package_code}"
+    if not allowance_mode and isinstance(normalized_match, dict):
+        allowance_mode = str(normalized_match.get("allowanceMode") or "total").strip().lower()
+    final_bundle_name = bundle_name
+    if not final_bundle_name:
+        if isinstance(normalized_match, dict):
+            final_bundle_name = str(normalized_match.get("bundleName") or "").strip()
+        elif allowance_mode == "per_day" and plan_slug:
+            final_bundle_name = f"ea::{plan_slug}"
+        else:
+            final_bundle_name = f"ea::{package_code}"
+    if isinstance(matched_package, dict):
+        matched_package = dict(matched_package)
+        matched_package["_resolved_allowance_mode"] = allowance_mode or "total"
+        matched_package["_resolved_slug"] = plan_slug
     return package_code, final_bundle_name, unit_price_raw, matched_package
 
 
@@ -826,19 +881,33 @@ def create_router() -> APIRouter:
     async def esimaccess_create_order(request: Request) -> dict[str, Any]:
         user = _require_esim_user(request)
         payload = await read_request_payload(request)
-        package_code, bundle_name, unit_price_raw, _ = _resolve_package_for_order(payload)
+        package_code, bundle_name, unit_price_raw, matched_package = _resolve_package_for_order(payload)
         quantity = max(1, _to_int(payload.get("quantity"), default=1))
+        allowance_mode = ""
+        plan_slug = ""
+        if isinstance(matched_package, dict):
+            allowance_mode = str(matched_package.get("_resolved_allowance_mode") or "").strip().lower()
+            plan_slug = str(matched_package.get("_resolved_slug") or "").strip()
         transaction_id = str(payload.get("idempotencyKey") or payload.get("idempotency_key") or "").strip() or f"tb-{uuid.uuid4().hex[:24]}"
+        period_num = 1
+        if allowance_mode == "per_day":
+            period_num = max(
+                1,
+                _to_int(
+                    payload.get("periodNum") or payload.get("period_num") or payload.get("durationDays") or 1,
+                    default=1,
+                ),
+            )
+        package_item = {"count": quantity, "price": unit_price_raw}
+        if allowance_mode == "per_day":
+            package_item["slug"] = plan_slug
+            package_item["periodNum"] = period_num
+        else:
+            package_item["packageCode"] = package_code
         order_payload = {
             "transactionId": transaction_id,
-            "amount": unit_price_raw * quantity,
-            "packageInfoList": [
-                {
-                    "packageCode": package_code,
-                    "count": quantity,
-                    "price": unit_price_raw,
-                }
-            ],
+            "amount": unit_price_raw * quantity * period_num,
+            "packageInfoList": [package_item],
         }
         order_resp = _provider_call(esimaccess_order_profiles, order_payload)
         order_obj = order_resp.get("obj") if isinstance(order_resp.get("obj"), dict) else {}
@@ -850,6 +919,10 @@ def create_router() -> APIRouter:
         provider_order["provider"] = "esimaccess"
         provider_order["bundleName"] = bundle_name
         provider_order["transactionId"] = str(order_obj.get("transactionId") or transaction_id)
+        provider_order["allowanceMode"] = allowance_mode or "total"
+        if allowance_mode == "per_day":
+            provider_order["periodNum"] = period_num
+            provider_order["providerSlug"] = plan_slug
         provider_order["raw_order"] = order_resp
 
         _upsert_order_snapshot(current_user=user, request_payload=payload, provider_result=provider_order)

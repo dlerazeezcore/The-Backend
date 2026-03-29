@@ -178,6 +178,14 @@ Order action endpoints that require main auth token:
 
 Hidden aliases are also registered under `/esim/api/*` and `/api/esim/access/*` legacy variants.
 
+Runtime behavior notes:
+
+- The merged eSIM catalog now includes both eSIMAccess fixed bundles and daily/day-pass bundles.
+- eSIMAccess bundle normalization exposes `allowanceMode` as either `total` or `per_day`.
+- Fixed eSIMAccess plans continue to order by `packageCode`.
+- Daily/day-pass eSIMAccess plans are queried with provider `dataType=2` and ordered with `slug` plus `periodNum` days.
+- Catalog de-duplication keeps `500MB total` and `500MB/day` as separate products.
+
 ### eSIM App (`/api/esim-app/*`)
 
 Auth and basic checks:
@@ -462,6 +470,16 @@ Standalone-only signup/forgot-password public access is disabled by default usin
 - `ESIMACCESS_PRICE_DIVISOR`
 - `ESIMACCESS_USE_SIGNATURE`
 - `ESIMACCESS_TIMEOUT_SEC`
+
+Provider integration notes:
+
+- The backend now fetches both base/fixed packages and daily/day-pass packages from eSIMAccess.
+- Normalized eSIMAccess bundles may include:
+  - `providerBundleCode` for fixed-package ordering
+  - `providerSlug` for day-pass ordering
+  - `providerDataType` from the supplier response
+  - `allowanceMode` set to `total` or `per_day`
+- For daily/day-pass orders, request payloads can include `periodNum` (or `period_num`) to choose the number of days.
 
 ### FIB payments
 
