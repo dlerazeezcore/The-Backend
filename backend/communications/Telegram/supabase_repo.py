@@ -298,6 +298,22 @@ def find_conversation_by_telegram_message(*, telegram_chat_id: str, telegram_mes
     return rows[0] if rows else None
 
 
+def find_latest_support_mapping_for_chat(*, telegram_chat_id: str) -> dict[str, Any] | None:
+    cfg = _config()
+    rows = _get_rows(
+        cfg,
+        cfg.telegram_map_table,
+        params={
+            "select": "conversation_id,app_message_id,telegram_chat_id,telegram_message_id,telegram_thread_id,direction,created_at",
+            "telegram_chat_id": f"eq.{telegram_chat_id}",
+            "direction": "eq.to_support",
+            "order": "created_at.desc",
+            "limit": "1",
+        },
+    )
+    return rows[0] if rows else None
+
+
 def get_conversation_for_user(user: dict[str, Any]) -> dict[str, Any] | None:
     cfg = _config()
     customer_user_id = _clean_text(user.get("id"))

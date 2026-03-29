@@ -85,17 +85,15 @@ def validate_telegram_webhook_secret(header_value: str | None) -> bool:
     return _clean_text(header_value) == expected
 
 
-def _support_message_markup(*, conversation_id: str, customer_label: str, customer_user_id: str, body: str) -> str:
-    return "\n".join(
-        [
-            "<b>New in-app support message</b>",
-            f"<b>Conversation:</b> <code>{_telegram_safe(conversation_id)}</code>",
-            f"<b>Customer:</b> {_telegram_safe(customer_label)}",
-            f"<b>User ID:</b> <code>{_telegram_safe(customer_user_id)}</code>",
-            "",
-            _telegram_safe(body),
-        ]
-    )
+def _support_message_markup(*, customer_label: str, customer_phone: str, body: str) -> str:
+    lines = [
+        "<b>New in-app support message</b>",
+        f"<b>Customer:</b> {_telegram_safe(customer_label)}",
+    ]
+    if _clean_text(customer_phone):
+        lines.append(f"<b>Phone:</b> <code>{_telegram_safe(customer_phone)}</code>")
+    lines.extend(["", _telegram_safe(body)])
+    return "\n".join(lines)
 
 
 def send_customer_message(user: dict[str, Any], body: str) -> dict[str, Any]:
@@ -121,9 +119,8 @@ def send_customer_message(user: dict[str, Any], body: str) -> dict[str, Any]:
     telegram_payload: dict[str, Any] = {
         "chat_id": support_chat_id,
         "text": _support_message_markup(
-            conversation_id=str(conversation.get("id") or ""),
             customer_label=_telegram_display_name(user),
-            customer_user_id=_clean_text(user.get("id")),
+            customer_phone=_clean_text(user.get("phone")),
             body=text,
         ),
         "parse_mode": "HTML",
@@ -194,19 +191,19 @@ def handle_telegram_update(update: dict[str, Any]) -> dict[str, Any]:
         return {"status": "ignored", "reason": "Message came from an unapproved Telegram chat."}
 
     reply_to = message.get("reply_to_message") if isinstance(message.get("reply_to_message"), dict) else None
-    if not isinstance(reply_to, dict):
-        return {"status": "ignored", "reason": "Support replies must reply to a forwarded customer message."}
+    reply_to_message_id = reply_to.get("message_id") if isinstance(reply_to, dict) else None
 
-    reply_to_message_id = reply_to.get("message_id")
-    if not isinstance(reply_to_message_id, int):
-        return {"status": "ignored", "reason": "reply_to_message.message_id is missing."}
+    mapping = None
+    if isinstance(reply_to_message_id, int):
+        mapping = supabase_repo.find_conversation_by_telegram_message(
+            telegram_chat_id=chat_id,
+            telegram_message_id=reply_to_message_id,
+        )
 
-    mapping = supabase_repo.find_conversation_by_telegram_message(
-        telegram_chat_id=chat_id,
-        telegram_message_id=reply_to_message_id,
-    )
     if not mapping:
-        return {"status": "ignored", "reason": "No support conversation mapping found for Telegram reply."}
+        mapping = supabase_repo.find_latest_support_mapping_for_chat(telegram_chat_id=chat_id)
+        if not mapping:
+            return {"status": "ignored", "reason": "No support conversation mapping found for Telegram reply."}
 
     text = _telegram_message_text(message)
     if not text:
@@ -225,7 +222,7 @@ def handle_telegram_update(update: dict[str, Any]) -> dict[str, Any]:
         body=text,
         telegram_chat_id=chat_id,
         telegram_message_id=telegram_message_id,
-        reply_to_telegram_message_id=reply_to_message_id,
+        reply_to_telegram_message_id=reply_to_message_id if isinstance(reply_to_message_id, int) else None,
         metadata={"source": "telegram"},
     )
     supabase_repo.store_telegram_map(
