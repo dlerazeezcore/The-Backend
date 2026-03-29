@@ -4,10 +4,10 @@
   "telegram_support_message_thread_id": null,
   "telegram_webhook_secret": "14ffabdf4edd8c2e29c73f3dbf2daea6406095d3a62795f21e3243f7a782ac8f",
   "telegram_timeout_seconds": 20,
-  "supabase_url": "https://qdqrvxpurwztybhfypvs.supabase.co",
-  "supabase_service_role_key": "PUT_SUPABASE_SERVICE_ROLE_KEY_HERE",
+  "supabase_url": "https://orfcrujrzvmpkefyfqpo.supabase.co",
+  "supabase_service_role_key": "sb_publishable_Mip2tvzIwHQWOHYcdFpG9A_FEK0GFuf",
   "supabase_timeout_seconds": 20,
-  "support_conversations_table": "support_conversations",
-  "support_messages_table": "support_messages",
-  "support_telegram_map_table": "support_telegram_map"
+  "support_conversations_table": "corevia_support_conversations",
+  "support_messages_table": "corevia_support_messages",
+  "support_telegram_map_table": "corevia_support_telegram_map"
 }
