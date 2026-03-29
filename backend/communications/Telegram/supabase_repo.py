@@ -105,6 +105,16 @@ def _ensure_public_bucket(cfg: SupportSupabaseConfig, bucket: str) -> None:
     raise RuntimeError(f"Supabase storage bucket create failed ({response.status_code}): {response.text[:300]}")
 
 
+def _is_bucket_missing_response(response: requests.Response) -> bool:
+    text = str(getattr(response, "text", "") or "")
+    lowered = text.lower()
+    if "bucket not found" in lowered:
+        return True
+    if response.status_code == 404:
+        return True
+    return False
+
+
 def _get_rows(
     cfg: SupportSupabaseConfig,
     table: str,
@@ -298,7 +308,7 @@ def upload_attachment(
         data=content,
         timeout=cfg.timeout_seconds,
     )
-    if response.status_code == 404 and "Bucket not found" in response.text:
+    if _is_bucket_missing_response(response):
         _ensure_public_bucket(cfg, cfg.attachments_bucket)
         response = requests.post(
             _storage_object_endpoint(cfg, cfg.attachments_bucket, path),
