@@ -5,7 +5,7 @@
   "telegram_webhook_secret": "14ffabdf4edd8c2e29c73f3dbf2daea6406095d3a62795f21e3243f7a782ac8f",
   "telegram_timeout_seconds": 20,
   "supabase_url": "https://orfcrujrzvmpkefyfqpo.supabase.co",
-  "supabase_service_role_key": "sb_publishable_Mip2tvzIwHQWOHYcdFpG9A_FEK0GFuf",
+  "supabase_service_role_key": "",
   "supabase_timeout_seconds": 20,
   "support_conversations_table": "corevia_support_conversations",
   "support_messages_table": "corevia_support_messages",

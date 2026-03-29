@@ -51,13 +51,13 @@ def _env_candidates(key: str) -> tuple[str, ...]:
 
 
 def read_setting(key: str, default: Any = None) -> Any:
-    value = get_settings().get(key, None)
-    if not _looks_unset(value):
-        return value
     for env_key in _env_candidates(key):
         env_value = os.getenv(env_key)
         if not _looks_unset(env_value):
             return env_value
+    value = get_settings().get(key, None)
+    if not _looks_unset(value):
+        return value
     return default if value is None else value
 
 
