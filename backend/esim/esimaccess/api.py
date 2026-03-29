@@ -155,7 +155,7 @@ def _normalize_access_item(item: dict[str, Any]) -> dict[str, Any] | None:
         duration = _to_int(item.get("unusedValidTime"), default=0)
     data_type = _to_int(item.get("dataType"), default=1)
     daily_plan = data_type == 2 or "/day" in plan_name.lower() or "daily" in plan_slug.lower()
-    unlimited = data_type == 4 or daily_plan
+    unlimited = data_type == 4
     provider_price_raw = _to_int(item.get("price"), default=0)
     price_minor = _access_price_to_usd_minor(provider_price_raw)
     bundle_ref = plan_slug if daily_plan and plan_slug else package_code or plan_slug
