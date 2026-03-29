@@ -20,6 +20,7 @@ from backend.gateway.routers import (
     notifications_router,
     payments_router,
     permissions_router,
+    telegram_support_router,
 )
 
 load_project_env(__file__)
@@ -36,6 +37,7 @@ app.include_router(flights_router)
 app.include_router(payments_router)
 app.include_router(esim_router)
 app.include_router(esim_app_router)
+app.include_router(telegram_support_router)
 app.include_router(create_auth_router(), prefix="/api/auth")
 app.include_router(create_auth_compat_router())
 app.include_router(create_pending_router())

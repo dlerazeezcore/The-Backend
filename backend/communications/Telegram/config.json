@@ -1,0 +1,13 @@
+{
+  "telegram_bot_token": "PUT_TELEGRAM_BOT_TOKEN_HERE",
+  "telegram_support_chat_id": "PUT_TELEGRAM_SUPPORT_CHAT_ID_HERE",
+  "telegram_support_message_thread_id": null,
+  "telegram_webhook_secret": "PUT_TELEGRAM_WEBHOOK_SECRET_HERE",
+  "telegram_timeout_seconds": 20,
+  "supabase_url": "https://qdqrvxpurwztybhfypvs.supabase.co",
+  "supabase_service_role_key": "PUT_SUPABASE_SERVICE_ROLE_KEY_HERE",
+  "supabase_timeout_seconds": 20,
+  "support_conversations_table": "support_conversations",
+  "support_messages_table": "support_messages",
+  "support_telegram_map_table": "support_telegram_map"
+}

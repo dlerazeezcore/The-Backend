@@ -18,6 +18,7 @@ The standalone apps exist for domain-level split deployment when needed:
 - Passenger Database (`backend.passenger_database.api:create_app`)
 - eSIMAccess (`backend.esim.esimaccess.api:create_app`)
 - Corevia Email (`backend.communications.corevia_email.app:app`)
+- Telegram Support (`backend.communications.Telegram.app:app`)
 
 ## 2. Architecture
 
@@ -30,6 +31,7 @@ The standalone apps exist for domain-level split deployment when needed:
 | eSIM app | `backend/gateway/routers/esim_app.py`, `backend/gateway/esim_app_store.py` | Consumer app flow with local token pattern |
 | Payments (FIB) | `backend/gateway/routers/payments.py`, `backend/payments/fib/service.py` | FIB config + payment link creation |
 | Notifications / Email | `backend/gateway/routers/notifications.py`, `backend/communications/corevia_email/*` | Email config and send operations |
+| Telegram support | `backend/communications/Telegram/*`, `backend/gateway/app.py` | In-app support conversations bridged to a private Telegram support chat |
 | Permissions | `backend/gateway/routers/permissions.py`, `backend/gateway/permissions_store.py` | Service/API/provider toggles and schedules |
 | Passenger database | `backend/passenger_database/*` | Profiles, members, member history |
 | Pending | `backend/pending/*` | Manual fulfillment queue operations |
@@ -62,6 +64,7 @@ uvicorn backend.flights.wings.app:app --host 0.0.0.0 --port 5050
 uvicorn backend.passenger_database.app:app --host 0.0.0.0 --port 5060
 uvicorn backend.esim.esimaccess.app:app --host 0.0.0.0 --port 5070
 uvicorn backend.communications.corevia_email.app:app --host 0.0.0.0 --port 5080
+uvicorn backend.communications.Telegram.app:app --host 0.0.0.0 --port 5090
 ```
 
 ## 4. Local Setup
@@ -300,6 +303,24 @@ Protected config/test endpoints:
 - `POST /api/other-apis/email`
 - `POST /api/other-apis/email/test-send`
 
+### Telegram Support
+
+Customer in-app support endpoints:
+
+- `GET /api/telegram-support/conversation`
+- `POST /api/telegram-support/messages`
+
+Telegram webhook endpoint:
+
+- `POST /api/telegram-support/webhook`
+
+Runtime behavior notes:
+
+- Customer-facing routes require the same main bearer auth used by the rest of the backend.
+- Customer messages are persisted in Supabase support tables and forwarded to a private Telegram support chat.
+- Staff replies are expected as Telegram replies to the forwarded message so they can be mapped back into the in-app thread.
+- The same router is mounted in the unified gateway and in the standalone Telegram app.
+
 ### Payments / FIB
 
 Protected config/checkout endpoints:
@@ -413,6 +434,7 @@ In practice:
 | Passenger DB | `backend.passenger_database.app:app` | `5060` | Passenger + pending + transactions | Middleware enforces auth for passenger DB prefixes |
 | eSIMAccess | `backend.esim.esimaccess.app:app` | `5070` | Provider-oriented eSIM operations | eSIM endpoints require bearer auth and eSIM service access |
 | Corevia Email | `backend.communications.corevia_email.app:app` | `5080` | Email config/send service | Config/test routes require super admin; send routes require auth |
+| Telegram Support | `backend.communications.Telegram.app:app` | `5090` | In-app support bridge backed by Telegram + Supabase | Conversation/message routes require auth; webhook is guarded by Telegram secret header |
 
 Standalone-only signup/forgot-password public access is disabled by default using environment toggles.
 
@@ -505,6 +527,20 @@ Provider integration notes:
 - `WHATSAPP_PHONE_NUMBER_ID`
 - `WHATSAPP_API_VERSION`
 
+### Telegram support config (`backend/communications/Telegram/config.json`)
+
+- `telegram_bot_token`
+- `telegram_support_chat_id`
+- `telegram_support_message_thread_id`
+- `telegram_webhook_secret`
+- `telegram_timeout_seconds`
+- `supabase_url`
+- `supabase_service_role_key`
+- `supabase_timeout_seconds`
+- `support_conversations_table`
+- `support_messages_table`
+- `support_telegram_map_table`
+
 ### Passenger database
 
 - `PASSENGER_DB_DEFAULT_OWNER_ID`
@@ -554,6 +590,11 @@ The backend uses Supabase document storage with local JSON fallback.
 Additional cache files:
 
 - eSIM merged catalog cache: `backend/esim/oasis/catalog_cache.json`
+
+Additional relational/Supabase tables:
+
+- Telegram support bridge expects SQL tables created from `backend/communications/Telegram/supabase_support_chat.sql`
+- Default table names are `support_conversations`, `support_messages`, and `support_telegram_map`
 
 ## 10. CORS Defaults
 
