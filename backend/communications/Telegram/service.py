@@ -96,19 +96,52 @@ def _support_message_markup(*, customer_label: str, customer_phone: str, body: s
     return "\n".join(lines)
 
 
-def send_customer_message(user: dict[str, Any], body: str) -> dict[str, Any]:
+def _attachment_metadata(attachment: dict[str, Any] | None) -> dict[str, Any]:
+    row = attachment if isinstance(attachment, dict) else {}
+    if not row:
+        return {}
+    return {
+        "type": "image",
+        "url": _clean_text(row.get("url")),
+        "bucket": _clean_text(row.get("bucket")),
+        "path": _clean_text(row.get("path")),
+        "name": _clean_text(row.get("name")),
+        "content_type": _clean_text(row.get("content_type")),
+        "size": int(row.get("size") or 0),
+    }
+
+
+def _support_photo_caption(*, customer_label: str, customer_phone: str, body: str, attachment_name: str) -> str:
+    lines = [
+        "<b>New in-app support image</b>",
+        f"<b>Customer:</b> {_telegram_safe(customer_label)}",
+    ]
+    if _clean_text(customer_phone):
+        lines.append(f"<b>Phone:</b> <code>{_telegram_safe(customer_phone)}</code>")
+    if _clean_text(attachment_name):
+        lines.append(f"<b>Attachment:</b> {_telegram_safe(attachment_name)}")
+    if _clean_text(body):
+        lines.extend(["", _telegram_safe(body)])
+    return "\n".join(lines)
+
+
+def send_customer_message(user: dict[str, Any], body: str, *, attachment: dict[str, Any] | None = None) -> dict[str, Any]:
     text = _clean_text(body)
-    if not text:
-        raise RuntimeError("Message body is required.")
+    attachment_meta = _attachment_metadata(attachment)
+    if not text and not attachment_meta:
+        raise RuntimeError("Message body or image attachment is required.")
 
     conversation = supabase_repo.get_or_create_open_conversation(user)
+    metadata: dict[str, Any] = {"source": "app"}
+    if attachment_meta:
+        metadata["attachment"] = attachment_meta
     message = supabase_repo.create_message(
         conversation_id=str(conversation.get("id") or ""),
         sender_type="customer",
         sender_user_id=_clean_text(user.get("id")),
         sender_display_name=_telegram_display_name(user),
         body=text,
-        metadata={"source": "app"},
+        metadata=metadata,
     )
 
     support_chat_id = _telegram_support_chat_id()
@@ -116,19 +149,35 @@ def send_customer_message(user: dict[str, Any], body: str) -> dict[str, Any]:
         raise RuntimeError("TELEGRAM_SUPPORT_CHAT_ID is missing.")
 
     thread_id = _telegram_support_thread_id()
-    telegram_payload: dict[str, Any] = {
-        "chat_id": support_chat_id,
-        "text": _support_message_markup(
-            customer_label=_telegram_display_name(user),
-            customer_phone=_clean_text(user.get("phone")),
-            body=text,
-        ),
-        "parse_mode": "HTML",
-    }
+    telegram_method = "sendMessage"
+    telegram_payload: dict[str, Any]
+    if attachment_meta:
+        telegram_method = "sendPhoto"
+        telegram_payload = {
+            "chat_id": support_chat_id,
+            "photo": attachment_meta["url"],
+            "caption": _support_photo_caption(
+                customer_label=_telegram_display_name(user),
+                customer_phone=_clean_text(user.get("phone")),
+                body=text,
+                attachment_name=str(attachment_meta.get("name") or ""),
+            ),
+            "parse_mode": "HTML",
+        }
+    else:
+        telegram_payload = {
+            "chat_id": support_chat_id,
+            "text": _support_message_markup(
+                customer_label=_telegram_display_name(user),
+                customer_phone=_clean_text(user.get("phone")),
+                body=text,
+            ),
+            "parse_mode": "HTML",
+        }
     if thread_id is not None:
         telegram_payload["message_thread_id"] = thread_id
 
-    telegram_result = _post_telegram("sendMessage", telegram_payload)
+    telegram_result = _post_telegram(telegram_method, telegram_payload)
     telegram_message_id = telegram_result.get("message_id")
     telegram_chat = telegram_result.get("chat") if isinstance(telegram_result.get("chat"), dict) else {}
     telegram_chat_id = _clean_text(telegram_chat.get("id")) or support_chat_id
@@ -146,7 +195,7 @@ def send_customer_message(user: dict[str, Any], body: str) -> dict[str, Any]:
     )
     conversation = supabase_repo.touch_conversation(
         str(conversation.get("id") or ""),
-        latest_customer_message_preview=_preview(text),
+        latest_customer_message_preview=_preview(text or f"[image] {attachment_meta.get('name') or 'attachment'}"),
         telegram_chat_id=telegram_chat_id,
         telegram_thread_id=thread_id,
     )

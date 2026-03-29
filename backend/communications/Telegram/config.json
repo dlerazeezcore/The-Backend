@@ -7,6 +7,7 @@
   "supabase_url": "https://orfcrujrzvmpkefyfqpo.supabase.co",
   "supabase_service_role_key": "",
   "supabase_timeout_seconds": 20,
+  "support_attachments_bucket": "support-attachments",
   "support_conversations_table": "corevia_support_conversations",
   "support_messages_table": "corevia_support_messages",
   "support_telegram_map_table": "corevia_support_telegram_map"

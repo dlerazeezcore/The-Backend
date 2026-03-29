@@ -43,6 +43,7 @@ Edit `config.json` and fill:
 Optional:
 
 - `telegram_support_message_thread_id`
+- `support_attachments_bucket`
 - `support_conversations_table`
 - `support_messages_table`
 - `support_telegram_map_table`
@@ -66,6 +67,11 @@ Optional:
   "body": "Hello, I need help with my order"
 }
 ```
+
+Or send `multipart/form-data` with:
+
+- `body`: optional text
+- `file`: optional image attachment
 
 Requires the same bearer auth pattern already used by the backend.
 
@@ -100,7 +106,7 @@ curl -X POST "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/setWebhook" \
 
 ## Notes
 
-- v1 supports text messages only.
+- Customer messages support text-only, image-only, or text plus one image attachment.
 - Staff replies must be sent as Telegram replies to the forwarded customer message.
 - The app remains fully in-app; customers are never redirected to Telegram.
 - This module is also wired into the main backend gateway in this repo.

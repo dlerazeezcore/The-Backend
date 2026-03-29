@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi import APIRouter, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
 
 from backend.auth.api import get_authenticated_user
 from backend.gateway.esim_app_store import get_user_by_id
 
+from . import supabase_repo
 from .schemas import ConversationResponse, CustomerMessageRequest
 from .service import (
     handle_telegram_update,
@@ -69,10 +70,38 @@ def get_support_conversation(request: Request):
 
 
 @router.post("/api/telegram-support/messages")
-def create_support_message(request: Request, req: CustomerMessageRequest):
+async def create_support_message(
+    request: Request,
+    body: str | None = Form(default=None),
+    file: UploadFile | None = File(default=None),
+):
     try:
         user = require_support_authenticated_user(request)
-        payload = send_customer_message(user, req.body)
+        text = body
+        upload_meta = None
+        if "multipart/form-data" not in str(request.headers.get("content-type") or "").lower():
+            payload_json = await request.json()
+            if isinstance(payload_json, dict):
+                req = CustomerMessageRequest(**payload_json)
+                text = req.body
+        if file is not None:
+            content_type = str(file.content_type or "").strip().lower()
+            if not content_type.startswith("image/"):
+                raise HTTPException(status_code=400, detail="Only image attachments are supported.")
+            blob = await file.read()
+            if not blob:
+                raise HTTPException(status_code=400, detail="Uploaded image is empty.")
+            if len(blob) > 10 * 1024 * 1024:
+                raise HTTPException(status_code=400, detail="Image attachment exceeds 10MB.")
+            conversation = supabase_repo.get_or_create_open_conversation(user)
+            conversation_id = str((conversation or {}).get("id") or "")
+            upload_meta = supabase_repo.upload_attachment(
+                conversation_id=conversation_id,
+                filename=str(file.filename or "attachment"),
+                content=blob,
+                content_type=content_type,
+            )
+        payload = send_customer_message(user, text or "", attachment=upload_meta)
         return {
             "status": "ok",
             "conversation": payload.get("conversation"),

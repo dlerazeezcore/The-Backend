@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import mimetypes
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -41,6 +42,7 @@ class SupportSupabaseConfig:
     conversations_table: str
     messages_table: str
     telegram_map_table: str
+    attachments_bucket: str
 
 
 def _config() -> SupportSupabaseConfig:
@@ -51,6 +53,7 @@ def _config() -> SupportSupabaseConfig:
         conversations_table=read_text("support_conversations_table", "support_conversations") or "support_conversations",
         messages_table=read_text("support_messages_table", "support_messages") or "support_messages",
         telegram_map_table=read_text("support_telegram_map_table", "support_telegram_map") or "support_telegram_map",
+        attachments_bucket=read_text("support_attachments_bucket", "support-attachments") or "support-attachments",
     )
 
 
@@ -72,6 +75,14 @@ def _headers(cfg: SupportSupabaseConfig, *, prefer: str | None = None) -> dict[s
 
 def _endpoint(cfg: SupportSupabaseConfig, table: str) -> str:
     return f"{cfg.url}/rest/v1/{table}"
+
+
+def _storage_object_endpoint(cfg: SupportSupabaseConfig, bucket: str, path: str) -> str:
+    return f"{cfg.url}/storage/v1/object/{bucket}/{path.lstrip('/')}"
+
+
+def _storage_public_url(cfg: SupportSupabaseConfig, bucket: str, path: str) -> str:
+    return f"{cfg.url}/storage/v1/object/public/{bucket}/{path.lstrip('/')}"
 
 
 def _get_rows(
@@ -236,6 +247,47 @@ def create_message(
     if not created:
         raise RuntimeError("Failed to create support message.")
     return created[0]
+
+
+def upload_attachment(
+    *,
+    conversation_id: str,
+    filename: str,
+    content: bytes,
+    content_type: str,
+) -> dict[str, Any]:
+    cfg = _config()
+    _ensure_config(cfg)
+    safe_name = (filename or "attachment").strip().replace("\\", "_").replace("/", "_")
+    ext = ""
+    if "." in safe_name:
+        ext = "." + safe_name.rsplit(".", 1)[-1].lower()
+    if not ext:
+        guessed = mimetypes.guess_extension(content_type or "") or ""
+        ext = guessed if isinstance(guessed, str) else ""
+    path = f"support/{conversation_id}/{uuid.uuid4().hex}{ext}"
+    headers = {
+        "apikey": cfg.key,
+        "Authorization": f"Bearer {cfg.key}",
+        "Content-Type": content_type or "application/octet-stream",
+        "x-upsert": "false",
+    }
+    response = requests.post(
+        _storage_object_endpoint(cfg, cfg.attachments_bucket, path),
+        headers=headers,
+        data=content,
+        timeout=cfg.timeout_seconds,
+    )
+    if response.status_code >= 400:
+        raise RuntimeError(f"Supabase storage upload failed ({response.status_code}): {response.text[:300]}")
+    return {
+        "bucket": cfg.attachments_bucket,
+        "path": path,
+        "url": _storage_public_url(cfg, cfg.attachments_bucket, path),
+        "name": safe_name,
+        "content_type": content_type or "application/octet-stream",
+        "size": len(content),
+    }
 
 
 def list_messages(conversation_id: str, *, limit: int = 200) -> list[dict[str, Any]]:
