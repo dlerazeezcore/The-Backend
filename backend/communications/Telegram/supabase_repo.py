@@ -85,6 +85,26 @@ def _storage_public_url(cfg: SupportSupabaseConfig, bucket: str, path: str) -> s
     return f"{cfg.url}/storage/v1/object/public/{bucket}/{path.lstrip('/')}"
 
 
+def _storage_bucket_endpoint(cfg: SupportSupabaseConfig, bucket: str = "") -> str:
+    suffix = f"/{bucket}" if bucket else ""
+    return f"{cfg.url}/storage/v1/bucket{suffix}"
+
+
+def _ensure_public_bucket(cfg: SupportSupabaseConfig, bucket: str) -> None:
+    _ensure_config(cfg)
+    response = requests.post(
+        _storage_bucket_endpoint(cfg),
+        headers=_headers(cfg),
+        json={"id": bucket, "name": bucket, "public": True},
+        timeout=cfg.timeout_seconds,
+    )
+    if response.status_code in {200, 201}:
+        return
+    if response.status_code == 409:
+        return
+    raise RuntimeError(f"Supabase storage bucket create failed ({response.status_code}): {response.text[:300]}")
+
+
 def _get_rows(
     cfg: SupportSupabaseConfig,
     table: str,
@@ -278,6 +298,14 @@ def upload_attachment(
         data=content,
         timeout=cfg.timeout_seconds,
     )
+    if response.status_code == 404 and "Bucket not found" in response.text:
+        _ensure_public_bucket(cfg, cfg.attachments_bucket)
+        response = requests.post(
+            _storage_object_endpoint(cfg, cfg.attachments_bucket, path),
+            headers=headers,
+            data=content,
+            timeout=cfg.timeout_seconds,
+        )
     if response.status_code >= 400:
         raise RuntimeError(f"Supabase storage upload failed ({response.status_code}): {response.text[:300]}")
     return {
@@ -285,6 +313,7 @@ def upload_attachment(
         "path": path,
         "url": _storage_public_url(cfg, cfg.attachments_bucket, path),
         "name": safe_name,
+        "mimeType": content_type or "application/octet-stream",
         "content_type": content_type or "application/octet-stream",
         "size": len(content),
     }

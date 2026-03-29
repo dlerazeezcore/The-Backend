@@ -106,6 +106,7 @@ def _attachment_metadata(attachment: dict[str, Any] | None) -> dict[str, Any]:
         "bucket": _clean_text(row.get("bucket")),
         "path": _clean_text(row.get("path")),
         "name": _clean_text(row.get("name")),
+        "mimeType": _clean_text(row.get("mimeType") or row.get("content_type")),
         "content_type": _clean_text(row.get("content_type")),
         "size": int(row.get("size") or 0),
     }
