@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import mimetypes
 import os
 import re
 import time
@@ -7,7 +8,8 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, Request
+import requests
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 
 from backend.gateway.esim_app_store import (
     ROOT_ADMIN_PHONE,
@@ -48,6 +50,9 @@ DEFAULT_SMDP_ADDRESS = os.getenv("ESIMACCESS_DEFAULT_SMDP", "rsp-eu.simlessly.co
 
 _DESTINATIONS_CACHE_TTL_SEC = 180
 _COUNTRY_PLANS_CACHE_TTL_SEC = 180
+_ESIM_APP_TUTORIALS_BUCKET = (
+    str(os.getenv("ESIM_APP_TUTORIALS_BUCKET") or "esim-app-home-tutorials").strip() or "esim-app-home-tutorials"
+)
 
 _COUNTRY_NAME_BY_ISO: Dict[str, str] = {
     "US": "United States",
@@ -107,6 +112,90 @@ _COUNTRY_NAME_BY_ISO: Dict[str, str] = {
 _ISO_BY_COUNTRY_NAME: Dict[str, str] = {
     str(name or "").strip().lower(): code for code, name in _COUNTRY_NAME_BY_ISO.items()
 }
+
+
+def _supabase_storage_config() -> tuple[str, str, float]:
+    url = str(os.getenv("SUPABASE_URL") or "").strip().rstrip("/")
+    key = str(
+        os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+        or os.getenv("SUPABASE_SERVICE_KEY")
+        or os.getenv("SUPABASE_ANON_KEY")
+        or ""
+    ).strip()
+    timeout_seconds = float(str(os.getenv("SUPABASE_TIMEOUT_SECONDS") or "20").strip() or "20")
+    return url, key, timeout_seconds
+
+
+def _storage_object_endpoint(base_url: str, bucket: str, path: str) -> str:
+    return f"{base_url}/storage/v1/object/{bucket}/{path.lstrip('/')}"
+
+
+def _storage_public_url(base_url: str, bucket: str, path: str) -> str:
+    return f"{base_url}/storage/v1/object/public/{bucket}/{path.lstrip('/')}"
+
+
+def _storage_bucket_endpoint(base_url: str, bucket: str = "") -> str:
+    suffix = f"/{bucket}" if bucket else ""
+    return f"{base_url}/storage/v1/bucket{suffix}"
+
+
+def _ensure_public_bucket(base_url: str, key: str, bucket: str, timeout_seconds: float) -> None:
+    response = requests.post(
+        _storage_bucket_endpoint(base_url),
+        headers={
+            "apikey": key,
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+        },
+        json={"id": bucket, "name": bucket, "public": True},
+        timeout=timeout_seconds,
+    )
+    if response.status_code in {200, 201, 409}:
+        return
+    raise RuntimeError(f"Supabase storage bucket create failed ({response.status_code}): {response.text[:300]}")
+
+
+def _tutorial_upload_path(platform: str, asset_type: str, filename: str, content_type: str) -> str:
+    safe_name = (filename or "upload").strip().replace("\\", "_").replace("/", "_")
+    ext = ""
+    if "." in safe_name:
+        ext = "." + safe_name.rsplit(".", 1)[-1].lower()
+    if not ext:
+        guessed = mimetypes.guess_extension(content_type or "") or ""
+        ext = guessed if isinstance(guessed, str) else ""
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return f"esim-app/home-tutorial/{platform}/{asset_type}/{stamp}-{uuid4().hex}{ext}"
+
+
+def _upload_home_tutorial_asset(*, platform: str, asset_type: str, filename: str, content: bytes, content_type: str) -> str:
+    base_url, key, timeout_seconds = _supabase_storage_config()
+    if not base_url or not key:
+        raise RuntimeError("Supabase storage is not configured. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.")
+
+    path = _tutorial_upload_path(platform, asset_type, filename, content_type)
+    headers = {
+        "apikey": key,
+        "Authorization": f"Bearer {key}",
+        "Content-Type": content_type or "application/octet-stream",
+        "x-upsert": "false",
+    }
+    response = requests.post(
+        _storage_object_endpoint(base_url, _ESIM_APP_TUTORIALS_BUCKET, path),
+        headers=headers,
+        data=content,
+        timeout=timeout_seconds,
+    )
+    if response.status_code == 404 or "bucket not found" in str(response.text or "").lower():
+        _ensure_public_bucket(base_url, key, _ESIM_APP_TUTORIALS_BUCKET, timeout_seconds)
+        response = requests.post(
+            _storage_object_endpoint(base_url, _ESIM_APP_TUTORIALS_BUCKET, path),
+            headers=headers,
+            data=content,
+            timeout=timeout_seconds,
+        )
+    if response.status_code >= 400:
+        raise RuntimeError(f"Supabase storage upload failed ({response.status_code}): {response.text[:300]}")
+    return _storage_public_url(base_url, _ESIM_APP_TUTORIALS_BUCKET, path)
 
 
 def _country_name_from_iso(iso: str, fallback: str = "") -> str:
@@ -1210,6 +1299,38 @@ async def destinations_popular_set(payload: Dict[str, Any]):
 async def destinations_popular_clear():
     update_settings("popular", [])
     return {"success": True, "data": []}
+
+
+@router.post("/api/esim-app/home-tutorial/upload")
+async def home_tutorial_upload(
+    platform: str = Form(...),
+    assetType: str = Form(...),
+    file: UploadFile = File(...),
+):
+    platform_value = str(platform or "").strip().lower()
+    if platform_value not in {"iphone", "android"}:
+        raise HTTPException(status_code=400, detail="platform must be one of: iphone, android")
+
+    asset_type_value = str(assetType or "").strip().lower()
+    if asset_type_value not in {"video", "thumbnail"}:
+        raise HTTPException(status_code=400, detail="assetType must be one of: video, thumbnail")
+
+    blob = await file.read()
+    if not blob:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+
+    try:
+        public_url = _upload_home_tutorial_asset(
+            platform=platform_value,
+            asset_type=asset_type_value,
+            filename=str(file.filename or "upload"),
+            content=blob,
+            content_type=str(file.content_type or "application/octet-stream"),
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    return {"success": True, "data": {"url": public_url}}
 
 
 async def _create_fib_payment(payload: Dict[str, Any]):
