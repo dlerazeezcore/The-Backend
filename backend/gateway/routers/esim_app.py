@@ -198,6 +198,58 @@ def _upload_home_tutorial_asset(*, platform: str, asset_type: str, filename: str
     return _storage_public_url(base_url, _ESIM_APP_TUTORIALS_BUCKET, path)
 
 
+def _default_home_tutorial_settings() -> Dict[str, Any]:
+    return {
+        "enabled": False,
+        "cardTitle": "",
+        "cardSubtitle": "",
+        "modalTitle": "",
+        "iphone": {
+            "videoUrl": "",
+            "thumbnailUrl": "",
+            "description": "",
+            "durationLabel": "",
+        },
+        "android": {
+            "videoUrl": "",
+            "thumbnailUrl": "",
+            "description": "",
+            "durationLabel": "",
+        },
+    }
+
+
+def _normalize_home_tutorial_platform_settings(value: Any) -> Dict[str, str]:
+    row = value if isinstance(value, dict) else {}
+    return {
+        "videoUrl": str(row.get("videoUrl") or "").strip(),
+        "thumbnailUrl": str(row.get("thumbnailUrl") or "").strip(),
+        "description": str(row.get("description") or "").strip(),
+        "durationLabel": str(row.get("durationLabel") or "").strip(),
+    }
+
+
+def _normalize_home_tutorial_settings(value: Any) -> Dict[str, Any]:
+    row = value if isinstance(value, dict) else {}
+    return {
+        "enabled": bool(row.get("enabled")),
+        "cardTitle": str(row.get("cardTitle") or "").strip(),
+        "cardSubtitle": str(row.get("cardSubtitle") or "").strip(),
+        "modalTitle": str(row.get("modalTitle") or "").strip(),
+        "iphone": _normalize_home_tutorial_platform_settings(row.get("iphone")),
+        "android": _normalize_home_tutorial_platform_settings(row.get("android")),
+    }
+
+
+def _get_home_tutorial_settings() -> Dict[str, Any]:
+    settings = get_settings()
+    current = _normalize_home_tutorial_settings(settings.get("homeTutorial"))
+    default = _default_home_tutorial_settings()
+    if current == default and settings.get("homeTutorial") != default:
+        update_settings("homeTutorial", current)
+    return current
+
+
 def _country_name_from_iso(iso: str, fallback: str = "") -> str:
     code = str(iso or "").strip().upper()
     if code and code in _COUNTRY_NAME_BY_ISO:
@@ -1331,6 +1383,23 @@ async def home_tutorial_upload(
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     return {"success": True, "data": {"url": public_url}}
+
+
+@router.get("/api/esim-app/home-tutorial/current")
+async def home_tutorial_current():
+    return {"success": True, "data": _get_home_tutorial_settings()}
+
+
+@router.get("/api/esim-app/home-tutorial")
+async def home_tutorial_get():
+    return {"success": True, "data": _get_home_tutorial_settings()}
+
+
+@router.post("/api/esim-app/home-tutorial")
+async def home_tutorial_set(payload: Dict[str, Any]):
+    data = _normalize_home_tutorial_settings(payload)
+    update_settings("homeTutorial", data)
+    return {"success": True, "data": data}
 
 
 async def _create_fib_payment(payload: Dict[str, Any]):

@@ -44,6 +44,24 @@ def _default_store() -> Dict[str, Any]:
             "currency": {"enableIQD": False, "exchangeRate": "1320", "markupPercent": "0"},
             "whitelist": {"enabled": False, "codes": []},
             "popular": [],
+            "homeTutorial": {
+                "enabled": False,
+                "cardTitle": "",
+                "cardSubtitle": "",
+                "modalTitle": "",
+                "iphone": {
+                    "videoUrl": "",
+                    "thumbnailUrl": "",
+                    "description": "",
+                    "durationLabel": "",
+                },
+                "android": {
+                    "videoUrl": "",
+                    "thumbnailUrl": "",
+                    "description": "",
+                    "durationLabel": "",
+                },
+            },
         },
         "esims": [],
     }
@@ -80,6 +98,8 @@ def load_store() -> Dict[str, Any]:
         data["settings"]["whitelist"] = {"enabled": False, "codes": []}
     if "popular" not in data["settings"]:
         data["settings"]["popular"] = []
+    if "homeTutorial" not in data["settings"]:
+        data["settings"]["homeTutorial"] = _default_store()["settings"]["homeTutorial"]
     return data
 
 
