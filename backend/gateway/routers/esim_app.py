@@ -14,18 +14,23 @@ from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from backend.gateway.esim_app_store import (
     ROOT_ADMIN_PHONE,
     add_super_admin,
+    create_push_campaign,
     create_esim,
     create_user,
+    disable_push_device,
     delete_user,
     get_settings,
     get_user_by_id,
     get_user_by_phone,
     is_super_admin,
+    list_push_campaigns,
+    list_push_devices,
     list_esims,
     list_super_admins,
     list_users,
     normalize_phone,
     remove_super_admin,
+    upsert_push_device,
     update_esim,
     update_settings,
     update_user,
@@ -33,6 +38,10 @@ from backend.gateway.esim_app_store import (
 from backend.gateway.esim_shared import (
     cache_get,
     cache_set,
+)
+from backend.communications.push_notifications.service import (
+    is_configured as push_notifications_is_configured,
+    send_push_notification,
 )
 from backend.gateway.permissions_store import _api_policy, _service_enabled
 from backend.communications.twilio_whatsapp.service import send_whatsapp_many
@@ -716,6 +725,107 @@ def _extract_user_id_from_request(request: Request | None) -> str:
     if token.startswith("local-") and len(token) > 6:
         return token[6:]
     return ""
+
+
+def _extract_optional_user_id(payload: Dict[str, Any], request: Request | None = None) -> str:
+    if "userId" in payload:
+        return str(payload.get("userId") or "").strip()
+    return _extract_user_id_from_request(request)
+
+
+def _normalize_push_audience(value: Any) -> str:
+    audience = str(value or "all").strip().lower()
+    if audience not in {"all", "authenticated", "loyalty", "active_esim"}:
+        return "all"
+    return audience
+
+
+def _normalize_push_kind(value: Any) -> str:
+    kind = str(value or "general").strip().lower()
+    if kind not in {"offers", "orders", "support", "general"}:
+        return "general"
+    return kind
+
+
+def _push_channel_for_kind(kind: str) -> str:
+    mapping = {
+        "offers": "offers",
+        "orders": "orders",
+        "support": "support",
+        "general": "general",
+    }
+    return mapping.get(str(kind or "").strip().lower(), "general")
+
+
+def _active_push_devices() -> List[Dict[str, Any]]:
+    out = []
+    for device in list_push_devices():
+        if not isinstance(device, dict):
+            continue
+        if not bool(device.get("notificationsEnabled")):
+            continue
+        token = str(device.get("token") or "").strip()
+        if not token:
+            continue
+        out.append(device)
+    return out
+
+
+def _filter_push_devices_for_audience(audience: str) -> List[Dict[str, Any]]:
+    devices = _active_push_devices()
+    if audience == "all":
+        return devices
+
+    if audience == "authenticated":
+        return [device for device in devices if str(device.get("userId") or "").strip()]
+
+    loyalty_user_ids = {
+        str(user.get("id") or "").strip()
+        for user in list_users()
+        if bool(user.get("loyalty")) and str(user.get("id") or "").strip()
+    }
+    if audience == "loyalty":
+        return [device for device in devices if str(device.get("userId") or "").strip() in loyalty_user_ids]
+
+    active_user_ids = {
+        str(esim.get("userId") or "").strip()
+        for esim in list_esims()
+        if str(esim.get("status") or "").strip().lower() == "active" and str(esim.get("userId") or "").strip()
+    }
+    if audience == "active_esim":
+        return [device for device in devices if str(device.get("userId") or "").strip() in active_user_ids]
+
+    return devices
+
+
+def _push_summary() -> Dict[str, Any]:
+    devices = list_push_devices()
+    enabled_devices = [device for device in devices if bool(device.get("notificationsEnabled")) and str(device.get("token") or "").strip()]
+    campaigns = list_push_campaigns()
+    last_campaign = campaigns[0] if campaigns else None
+
+    loyalty_user_ids = {
+        str(user.get("id") or "").strip()
+        for user in list_users()
+        if bool(user.get("loyalty")) and str(user.get("id") or "").strip()
+    }
+    active_user_ids = {
+        str(esim.get("userId") or "").strip()
+        for esim in list_esims()
+        if str(esim.get("status") or "").strip().lower() == "active" and str(esim.get("userId") or "").strip()
+    }
+
+    return {
+        "providerConfigured": push_notifications_is_configured(),
+        "totalDevices": len(devices),
+        "enabledDevices": len(enabled_devices),
+        "authenticatedDevices": len([device for device in enabled_devices if str(device.get("userId") or "").strip()]),
+        "loyaltyDevices": len([device for device in enabled_devices if str(device.get("userId") or "").strip() in loyalty_user_ids]),
+        "activeEsimDevices": len([device for device in enabled_devices if str(device.get("userId") or "").strip() in active_user_ids]),
+        "iosDevices": len([device for device in enabled_devices if str(device.get("platform") or "").strip().lower() == "ios"]),
+        "androidDevices": len([device for device in enabled_devices if str(device.get("platform") or "").strip().lower() == "android"]),
+        "lastCampaign": last_campaign or None,
+    }
 
 
 def _ensure_fib_checkout_online() -> None:
@@ -1481,6 +1591,116 @@ async def whitelist_clear():
     data = {"enabled": False, "codes": []}
     update_settings("whitelist", data)
     return {"success": True, "data": data}
+
+
+@router.post("/api/esim-app/push/devices/sync")
+async def push_devices_sync(payload: Dict[str, Any], request: Request):
+    install_id = str(payload.get("installId") or "").strip()
+    token = str(payload.get("token") or "").strip()
+    if not install_id and not token:
+        raise HTTPException(status_code=400, detail="installId or token is required")
+
+    record = upsert_push_device(
+        {
+            "installId": install_id,
+            "token": token,
+            "userId": _extract_optional_user_id(payload, request),
+            "platform": str(payload.get("platform") or "").strip().lower(),
+            "locale": str(payload.get("locale") or "").strip(),
+            "appVersion": str(payload.get("appVersion") or "").strip(),
+            "notificationsEnabled": bool(payload.get("notificationsEnabled", True)),
+        }
+    )
+    return {"success": True, "data": record}
+
+
+@router.post("/api/esim-app/push/devices/unregister")
+async def push_devices_unregister(payload: Dict[str, Any]):
+    install_id = str(payload.get("installId") or "").strip()
+    token = str(payload.get("token") or "").strip()
+    if not install_id and not token:
+        raise HTTPException(status_code=400, detail="installId or token is required")
+
+    record = disable_push_device(
+        install_id=install_id,
+        token=token,
+        user_id=str(payload.get("userId") or "").strip(),
+    )
+    if not record:
+        record = upsert_push_device(
+            {
+                "installId": install_id,
+                "token": token,
+                "userId": "",
+                "platform": str(payload.get("platform") or "").strip().lower(),
+                "notificationsEnabled": False,
+            }
+        )
+    return {"success": True, "data": record}
+
+
+@router.get("/api/esim-app/push/admin/summary")
+async def push_admin_summary(adminPhone: str):
+    if not is_super_admin(adminPhone):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    return {"success": True, "data": _push_summary()}
+
+
+@router.post("/api/esim-app/push/admin/send")
+async def push_admin_send(payload: Dict[str, Any]):
+    admin_phone = str(payload.get("adminPhone") or "").strip()
+    if not is_super_admin(admin_phone):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    title = str(payload.get("title") or "").strip()
+    body = str(payload.get("body") or "").strip()
+    route = str(payload.get("route") or "").strip()
+    audience = _normalize_push_audience(payload.get("audience"))
+    kind = _normalize_push_kind(payload.get("kind"))
+
+    if not title or not body:
+        raise HTTPException(status_code=400, detail="title and body are required")
+    if not push_notifications_is_configured():
+        raise HTTPException(status_code=503, detail="Firebase push notifications are not configured.")
+
+    devices = _filter_push_devices_for_audience(audience)
+    tokens = [str(device.get("token") or "").strip() for device in devices if str(device.get("token") or "").strip()]
+    send_result = send_push_notification(
+        tokens=tokens,
+        title=title,
+        body=body,
+        data={
+            "kind": kind,
+            "route": route,
+        },
+        channel_id=_push_channel_for_kind(kind),
+    )
+
+    invalid_tokens = set(send_result.get("invalidTokens") or [])
+    for invalid_token in invalid_tokens:
+        disable_push_device(install_id="", token=invalid_token, user_id="")
+
+    campaign = create_push_campaign(
+        {
+            "title": title,
+            "body": body,
+            "route": route,
+            "kind": kind,
+            "audience": audience,
+            "successCount": int(send_result.get("successCount") or 0),
+            "failureCount": int(send_result.get("failureCount") or 0),
+            "targetedDevices": len(tokens),
+            "sentBy": admin_phone,
+        }
+    )
+
+    return {
+        "success": True,
+        "data": {
+            **campaign,
+            "invalidTokens": list(invalid_tokens),
+        },
+    }
 
 
 @router.get("/api/esim-app/my-esims")

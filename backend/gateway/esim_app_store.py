@@ -64,6 +64,8 @@ def _default_store() -> Dict[str, Any]:
             },
         },
         "esims": [],
+        "pushDevices": [],
+        "pushCampaigns": [],
     }
 
 
@@ -90,6 +92,8 @@ def load_store() -> Dict[str, Any]:
     data.setdefault("super_admins", [ROOT_ADMIN_PHONE])
     data.setdefault("settings", {})
     data.setdefault("esims", [])
+    data.setdefault("pushDevices", [])
+    data.setdefault("pushCampaigns", [])
     if ROOT_ADMIN_PHONE not in data.get("super_admins", []):
         data["super_admins"].append(ROOT_ADMIN_PHONE)
     if "currency" not in data["settings"]:
@@ -295,5 +299,142 @@ def create_esim(
     }
     esims.insert(0, record)
     store["esims"] = esims
+    save_store(store)
+    return record
+
+
+def list_push_devices() -> List[Dict[str, Any]]:
+    store = load_store()
+    return list(store.get("pushDevices") or [])
+
+
+def list_push_campaigns() -> List[Dict[str, Any]]:
+    store = load_store()
+    return list(store.get("pushCampaigns") or [])
+
+
+def upsert_push_device(payload: Dict[str, Any]) -> Dict[str, Any]:
+    store = load_store()
+    devices = list(store.get("pushDevices") or [])
+    now = _now_iso()
+
+    install_id = str(payload.get("installId") or "").strip()
+    token = str(payload.get("token") or "").strip()
+    if not install_id and not token:
+        raise ValueError("installId or token is required")
+
+    platform = str(payload.get("platform") or "").strip().lower()
+    if platform not in {"ios", "android", "web"}:
+        platform = "web"
+
+    notifications_enabled = bool(payload.get("notificationsEnabled"))
+    user_id = str(payload.get("userId") or "").strip()
+    locale = str(payload.get("locale") or "").strip()
+    app_version = str(payload.get("appVersion") or "").strip()
+
+    match_index = -1
+    for index, device in enumerate(devices):
+        device_install_id = str(device.get("installId") or "").strip()
+        device_token = str(device.get("token") or "").strip()
+        if install_id and device_install_id == install_id:
+            match_index = index
+            break
+        if token and device_token == token:
+            match_index = index
+            break
+
+    existing = devices[match_index] if match_index >= 0 else {}
+    record = {
+      "id": str(existing.get("id") or uuid4()),
+      "installId": install_id or str(existing.get("installId") or ""),
+      "token": token or str(existing.get("token") or ""),
+      "userId": user_id,
+      "platform": platform,
+      "locale": locale or str(existing.get("locale") or ""),
+      "appVersion": app_version or str(existing.get("appVersion") or ""),
+      "notificationsEnabled": notifications_enabled,
+      "createdAt": str(existing.get("createdAt") or now),
+      "updatedAt": now,
+      "lastSeenAt": now,
+      "disabledAt": "" if notifications_enabled else str(existing.get("disabledAt") or now),
+    }
+
+    if match_index >= 0:
+        devices[match_index] = record
+    else:
+        devices.insert(0, record)
+
+    deduped: List[Dict[str, Any]] = []
+    seen_keys: set[str] = set()
+    for device in devices:
+        device_install_id = str(device.get("installId") or "").strip()
+        device_token = str(device.get("token") or "").strip()
+        dedupe_key = device_install_id or f"token:{device_token}"
+        if not dedupe_key or dedupe_key in seen_keys:
+            continue
+        seen_keys.add(dedupe_key)
+        deduped.append(device)
+
+    store["pushDevices"] = deduped
+    save_store(store)
+    return record
+
+
+def disable_push_device(install_id: str, token: str = "", user_id: str = "") -> Dict[str, Any] | None:
+    store = load_store()
+    devices = list(store.get("pushDevices") or [])
+    now = _now_iso()
+    updated_item = None
+    out = []
+
+    target_install_id = str(install_id or "").strip()
+    target_token = str(token or "").strip()
+
+    for item in devices:
+        item_install_id = str(item.get("installId") or "").strip()
+        item_token = str(item.get("token") or "").strip()
+        matched = (
+            (target_install_id and item_install_id == target_install_id)
+            or (target_token and item_token == target_token)
+        )
+        if not matched:
+            out.append(item)
+            continue
+
+        updated = dict(item)
+        updated["notificationsEnabled"] = False
+        updated["updatedAt"] = now
+        updated["disabledAt"] = now
+        if user_id == "":
+            updated["userId"] = ""
+        updated_item = updated
+        out.append(updated)
+
+    if updated_item is None:
+        return None
+
+    store["pushDevices"] = out
+    save_store(store)
+    return updated_item
+
+
+def create_push_campaign(payload: Dict[str, Any]) -> Dict[str, Any]:
+    store = load_store()
+    campaigns = list(store.get("pushCampaigns") or [])
+    record = {
+        "id": str(uuid4()),
+        "title": str(payload.get("title") or "").strip(),
+        "body": str(payload.get("body") or "").strip(),
+        "route": str(payload.get("route") or "").strip(),
+        "kind": str(payload.get("kind") or "").strip(),
+        "audience": str(payload.get("audience") or "").strip(),
+        "successCount": int(payload.get("successCount") or 0),
+        "failureCount": int(payload.get("failureCount") or 0),
+        "targetedDevices": int(payload.get("targetedDevices") or 0),
+        "sentBy": str(payload.get("sentBy") or "").strip(),
+        "createdAt": _now_iso(),
+    }
+    campaigns.insert(0, record)
+    store["pushCampaigns"] = campaigns[:100]
     save_store(store)
     return record
