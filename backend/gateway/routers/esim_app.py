@@ -1310,6 +1310,8 @@ async def login(payload: Dict[str, Any]):
             return {"success": False, "error": "User not found"}
     elif normalized_phone == ROOT_ADMIN_PHONE and password != ROOT_ADMIN_PASSWORD:
         return {"success": False, "error": "Invalid admin password"}
+    elif bool(user.get("isBlocked")):
+        return {"success": False, "error": "Your account is blocked"}
     return {"success": True, "data": {"userId": user["id"], "phone": user["phone"], "name": user.get("name") or "User", "token": f"local-{user['id']}"}}
 
 
@@ -1355,6 +1357,8 @@ async def users_list(adminPhone: str):
     for user in list_users():
         u = dict(user)
         u["isAdmin"] = u.get("phone") in admins
+        u["isBlocked"] = bool(u.get("isBlocked"))
+        u["loyalty"] = bool(u.get("loyalty"))
         users.append(u)
     return {"success": True, "data": users}
 
@@ -1367,6 +1371,25 @@ async def users_delete(user_id: str, adminPhone: str):
     if not ok:
         raise HTTPException(status_code=400, detail="User not found or cannot delete root admin")
     return {"success": True, "data": {"deleted": True}}
+
+
+@router.post("/api/esim-app/users/block")
+async def users_block(payload: Dict[str, Any]):
+    admin_phone = str(payload.get("adminPhone") or "").strip()
+    if not is_super_admin(admin_phone):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    user_id = str(payload.get("userId") or "").strip()
+    blocked = bool(payload.get("blocked"))
+    user = get_user_by_id(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if normalize_phone(str(user.get("phone") or "")) == ROOT_ADMIN_PHONE:
+        raise HTTPException(status_code=400, detail="Cannot block root admin")
+
+    user["isBlocked"] = blocked
+    update_user(user)
+    return {"success": True, "data": {"isBlocked": bool(user.get("isBlocked"))}}
 
 
 @router.post("/api/esim-app/loyalty/grant")

@@ -146,6 +146,7 @@ def create_user(phone: str, name: str) -> Dict[str, Any]:
         "phone": normalized,
         "createdAt": _now_iso(),
         "loyalty": False,
+        "isBlocked": False,
     }
     users.append(user)
     store["users"] = users
