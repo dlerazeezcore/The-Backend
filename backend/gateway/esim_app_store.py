@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from typing import Any, Dict, List
 from uuid import uuid4
 
@@ -16,21 +16,6 @@ STORE_PATH = DATA_DIR / "esim_app_store.json"
 
 def _now_iso() -> str:
     return datetime.utcnow().isoformat() + "Z"
-
-
-def _parse_iso_datetime(raw: object) -> datetime | None:
-    text = str(raw or "").strip()
-    if not text:
-        return None
-    try:
-        if text.endswith("Z"):
-            text = text[:-1] + "+00:00"
-        parsed = datetime.fromisoformat(text)
-        if parsed.tzinfo is None:
-            return parsed.replace(tzinfo=timezone.utc)
-        return parsed.astimezone(timezone.utc)
-    except Exception:
-        return None
 
 
 def _normalize_phone(phone: str) -> str:
@@ -324,36 +309,6 @@ def list_push_devices() -> List[Dict[str, Any]]:
     return list(store.get("pushDevices") or [])
 
 
-def list_push_devices_for_user(user_id: str) -> List[Dict[str, Any]]:
-    target = str(user_id or "").strip()
-    if not target:
-        return []
-    return [
-        device
-        for device in list_push_devices()
-        if str(device.get("userId") or "").strip() == target
-    ]
-
-
-def user_has_active_support_chat(user_id: str, *, within_seconds: int = 12) -> bool:
-    target = str(user_id or "").strip()
-    if not target:
-        return False
-
-    now = datetime.now(timezone.utc)
-    freshness_cutoff = now - timedelta(seconds=max(1, int(within_seconds or 0)))
-
-    for device in list_push_devices_for_user(target):
-        if not bool(device.get("notificationsEnabled")):
-            continue
-        if not bool(device.get("supportChatOpen")):
-            continue
-        seen_at = _parse_iso_datetime(device.get("supportChatSeenAt") or device.get("updatedAt") or "")
-        if seen_at and seen_at >= freshness_cutoff:
-            return True
-    return False
-
-
 def list_push_campaigns() -> List[Dict[str, Any]]:
     store = load_store()
     return list(store.get("pushCampaigns") or [])
@@ -377,8 +332,6 @@ def upsert_push_device(payload: Dict[str, Any]) -> Dict[str, Any]:
     user_id = str(payload.get("userId") or "").strip()
     locale = str(payload.get("locale") or "").strip()
     app_version = str(payload.get("appVersion") or "").strip()
-    support_chat_open = bool(payload.get("supportChatOpen"))
-    support_chat_seen_at = str(payload.get("supportChatSeenAt") or "").strip() or now
 
     match_index = -1
     for index, device in enumerate(devices):
@@ -405,8 +358,6 @@ def upsert_push_device(payload: Dict[str, Any]) -> Dict[str, Any]:
       "updatedAt": now,
       "lastSeenAt": now,
       "disabledAt": "" if notifications_enabled else str(existing.get("disabledAt") or now),
-      "supportChatOpen": support_chat_open,
-      "supportChatSeenAt": support_chat_seen_at if support_chat_open else "",
     }
 
     if match_index >= 0:
@@ -455,8 +406,6 @@ def disable_push_device(install_id: str, token: str = "", user_id: str = "") -> 
         updated["notificationsEnabled"] = False
         updated["updatedAt"] = now
         updated["disabledAt"] = now
-        updated["supportChatOpen"] = False
-        updated["supportChatSeenAt"] = ""
         if user_id == "":
             updated["userId"] = ""
         updated_item = updated

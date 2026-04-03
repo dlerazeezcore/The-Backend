@@ -1632,8 +1632,6 @@ async def push_devices_sync(payload: Dict[str, Any], request: Request):
             "locale": str(payload.get("locale") or "").strip(),
             "appVersion": str(payload.get("appVersion") or "").strip(),
             "notificationsEnabled": bool(payload.get("notificationsEnabled", True)),
-            "supportChatOpen": bool(payload.get("supportChatOpen")),
-            "supportChatSeenAt": str(payload.get("supportChatSeenAt") or "").strip(),
         }
     )
     return {"success": True, "data": record}

@@ -421,20 +421,3 @@ def get_conversation_for_user(user: dict[str, Any]) -> dict[str, Any] | None:
         },
     )
     return rows[0] if rows else None
-
-
-def get_conversation_by_id(conversation_id: str) -> dict[str, Any] | None:
-    cfg = _config()
-    target = _clean_text(conversation_id)
-    if not target:
-        return None
-    rows = _get_rows(
-        cfg,
-        cfg.conversations_table,
-        params={
-            "select": "*",
-            "id": f"eq.{target}",
-            "limit": "1",
-        },
-    )
-    return rows[0] if rows else None
