@@ -390,6 +390,27 @@ def get_telegram_webhook_info(*, settings: TelegramSupportSettings | None = None
     return result if isinstance(result, dict) else {}
 
 
+def get_telegram_updates(
+    *,
+    offset: int | None = None,
+    limit: int = 50,
+    timeout_seconds: int = 0,
+    settings: TelegramSupportSettings | None = None,
+) -> list[dict[str, Any]]:
+    payload: dict[str, Any] = {
+        "limit": max(1, min(int(limit or 0), 100)),
+        "timeout": max(0, min(int(timeout_seconds or 0), 50)),
+        "allowed_updates": list((settings or _settings()).allowed_updates),
+    }
+    if offset is not None:
+        payload["offset"] = int(offset)
+
+    result = _telegram_api_call("getUpdates", payload, settings=settings)
+    if not isinstance(result, list):
+        return []
+    return [row for row in result if isinstance(row, dict)]
+
+
 def get_telegram_webhook_status(*, settings: TelegramSupportSettings | None = None) -> dict[str, Any]:
     cfg = settings or _settings()
     desired_url = expected_telegram_webhook_url(cfg)

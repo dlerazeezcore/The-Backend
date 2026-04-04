@@ -31,6 +31,8 @@ BUILD_ID = "backend-live-wings-fix-v2"
 app = FastAPI(title="The Book Backend (API only)", version="1.0.0")
 configure_cors(app)
 
+_telegram_polling_task: asyncio.Task | None = None
+
 # Routers
 app.include_router(notifications_router)
 app.include_router(permissions_router)
@@ -91,6 +93,66 @@ async def _startup_check():
             print(f"WARNING: telegram webhook startup sync failed: {last_error}")
     except Exception as exc:
         print(f"WARNING: telegram webhook startup sync failed: {exc}")
+
+    enable_polling_fallback = str(
+        os.getenv("TELEGRAM_SUPPORT_ENABLE_POLLING_FALLBACK", "1")
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    if enable_polling_fallback:
+        global _telegram_polling_task
+        if _telegram_polling_task is None or _telegram_polling_task.done():
+            _telegram_polling_task = asyncio.create_task(_telegram_polling_loop())
+
+
+async def _telegram_polling_loop():
+    offset: int | None = None
+    while True:
+        try:
+            from backend.communications.Telegram.service import (
+                get_telegram_updates,
+                get_telegram_webhook_info,
+                handle_telegram_update,
+            )
+
+            webhook_info = await run_in_threadpool(get_telegram_webhook_info)
+            webhook_url = str((webhook_info or {}).get("url") or "").strip()
+            if webhook_url:
+                await asyncio.sleep(5)
+                continue
+
+            updates = await run_in_threadpool(
+                lambda: get_telegram_updates(offset=offset, limit=50, timeout_seconds=0)
+            )
+
+            if not updates:
+                await asyncio.sleep(2)
+                continue
+
+            for update in updates:
+                update_id = update.get("update_id")
+                if isinstance(update_id, int):
+                    next_offset = update_id + 1
+                    offset = next_offset if offset is None else max(offset, next_offset)
+                try:
+                    result = await run_in_threadpool(lambda upd=update: handle_telegram_update(upd))
+                    print(f"INFO: telegram polling handled result: {result}")
+                except Exception as exc:
+                    print(f"WARNING: telegram polling update handling failed: {exc}")
+        except Exception as exc:
+            print(f"WARNING: telegram polling fallback loop error: {exc}")
+            await asyncio.sleep(3)
+
+
+@app.on_event("shutdown")
+async def _shutdown_telegram_polling():
+    global _telegram_polling_task
+    if _telegram_polling_task is None:
+        return
+    _telegram_polling_task.cancel()
+    try:
+        await _telegram_polling_task
+    except Exception:
+        pass
+    _telegram_polling_task = None
 
 
 @app.get("/__build")
