@@ -258,10 +258,8 @@ async def telegram_webhook(
 
     secret_ok = validate_telegram_webhook_secret(x_telegram_bot_api_secret_token)
     if not secret_ok:
-        cfg = get_settings()
         allow_unsigned = _allow_unsigned_webhook_fallback()
-        expected_chat_id = str(cfg.support_chat_id or "").strip()
-        if not allow_unsigned or not expected_chat_id or chat_id != expected_chat_id:
+        if not allow_unsigned:
             print(
                 "WARNING: telegram webhook rejected due to secret mismatch "
                 f"(update_id={update_id}, update_type={update_type}, chat_id={chat_id})"
