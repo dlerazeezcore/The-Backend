@@ -503,6 +503,26 @@ def _support_photo_caption(*, customer_label: str, customer_phone: str, body: st
     return "\n".join(lines)
 
 
+def _support_push_target_metadata(value: dict[str, Any] | None) -> dict[str, Any] | None:
+    target = value if isinstance(value, dict) else {}
+    if not target:
+        return None
+
+    token = _clean_text(target.get("token") or target.get("pushToken"))
+    install_id = _clean_text(target.get("installId"))
+    platform = _clean_text(target.get("platform")).lower()
+    if not token and not install_id:
+        return None
+
+    return {
+        "token": token,
+        "installId": install_id,
+        "platform": platform if platform in {"ios", "android", "web"} else "",
+        "notificationsEnabled": bool(target.get("notificationsEnabled", True)),
+        "recordedAt": _now_iso(),
+    }
+
+
 def send_customer_message(
     user: dict[str, Any],
     body: str,
@@ -520,19 +540,13 @@ def send_customer_message(
     metadata: dict[str, Any] = {"source": "app"}
     if attachment_meta:
         metadata["attachment"] = attachment_meta
-    if isinstance(support_push_target, dict):
-        target = support_push_target
-        token = _clean_text(target.get("token") or target.get("pushToken"))
-        install_id = _clean_text(target.get("installId"))
-        platform = _clean_text(target.get("platform")).lower()
-        if token or install_id:
-            metadata["supportPushTarget"] = {
-                "token": token,
-                "installId": install_id,
-                "platform": platform if platform in {"ios", "android", "web"} else "",
-                "notificationsEnabled": bool(target.get("notificationsEnabled", True)),
-                "recordedAt": _now_iso(),
-            }
+    try:
+        support_target_metadata = _support_push_target_metadata(support_push_target)
+    except Exception as exc:
+        print(f"WARNING: failed to build support push target metadata: {exc}")
+        support_target_metadata = None
+    if support_target_metadata:
+        metadata["supportPushTarget"] = support_target_metadata
     message = supabase_repo.create_message(
         conversation_id=str(conversation.get("id") or ""),
         sender_type="customer",

@@ -218,6 +218,11 @@ async def create_support_message(
             "message": payload.get("message"),
         }
     except Exception as exc:
+        print(
+            "WARNING: telegram support message send failed "
+            f"(content_type={str(request.headers.get('content-type') or '').strip()}, "
+            f"has_file={file is not None}, text_len={len(_pick_message_text(body))}): {exc}"
+        )
         return _error_response(exc, default_status=400)
 
 
