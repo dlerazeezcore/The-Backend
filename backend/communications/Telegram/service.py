@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import mimetypes
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -333,17 +334,36 @@ def _safe_support_reply_push(*, conversation: dict[str, Any] | None, text: str, 
 
 def _telegram_api_call(method: str, payload: dict[str, Any] | None = None, *, settings: TelegramSupportSettings | None = None) -> Any:
     cfg = settings or _settings()
-    response = requests.post(
-        _telegram_api_url(method, settings=cfg),
-        json=payload if payload is not None else {},
-        timeout=cfg.timeout_seconds,
-    )
-    if response.status_code >= 400:
-        raise RuntimeError(f"Telegram API failed ({response.status_code}): {response.text[:300]}")
-    body = response.json()
-    if not bool(body.get("ok")):
-        raise RuntimeError(f"Telegram API returned error: {body}")
-    return body.get("result")
+    attempts = 4
+    last_error: Exception | None = None
+
+    for attempt in range(1, attempts + 1):
+        try:
+            response = requests.post(
+                _telegram_api_url(method, settings=cfg),
+                json=payload if payload is not None else {},
+                timeout=cfg.timeout_seconds,
+            )
+        except requests.RequestException as exc:
+            last_error = exc
+            if attempt >= attempts:
+                break
+            time.sleep(0.5 * attempt)
+            continue
+
+        if response.status_code >= 500 and attempt < attempts:
+            time.sleep(0.5 * attempt)
+            continue
+
+        if response.status_code >= 400:
+            raise RuntimeError(f"Telegram API failed ({response.status_code}): {response.text[:300]}")
+
+        body = response.json()
+        if not bool(body.get("ok")):
+            raise RuntimeError(f"Telegram API returned error: {body}")
+        return body.get("result")
+
+    raise RuntimeError(f"Telegram API request failed after retries: {last_error}")
 
 
 def _post_telegram(method: str, payload: dict[str, Any], *, settings: TelegramSupportSettings | None = None) -> dict[str, Any]:

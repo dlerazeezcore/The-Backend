@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 
 from fastapi import FastAPI
@@ -72,8 +73,22 @@ async def _startup_check():
     try:
         from backend.communications.Telegram.service import ensure_telegram_webhook_registered
 
-        result = await run_in_threadpool(ensure_telegram_webhook_registered)
-        print(f"telegram webhook startup sync: {result}")
+        sync_result = None
+        last_error: Exception | None = None
+        for attempt in range(1, 6):
+            try:
+                sync_result = await run_in_threadpool(ensure_telegram_webhook_registered)
+                print(f"telegram webhook startup sync: {sync_result}")
+                last_error = None
+                break
+            except Exception as exc:
+                last_error = exc
+                print(f"WARNING: telegram webhook startup sync attempt {attempt} failed: {exc}")
+                if attempt < 5:
+                    await asyncio.sleep(float(attempt))
+
+        if last_error is not None:
+            print(f"WARNING: telegram webhook startup sync failed: {last_error}")
     except Exception as exc:
         print(f"WARNING: telegram webhook startup sync failed: {exc}")
 
