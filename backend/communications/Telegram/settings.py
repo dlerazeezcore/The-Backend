@@ -15,8 +15,12 @@ DEFAULT_ALLOWED_UPDATES = (
     "edited_message",
     "channel_post",
     "edited_channel_post",
+    "business_connection",
     "business_message",
     "edited_business_message",
+    "deleted_business_messages",
+    "my_chat_member",
+    "chat_member",
 )
 ENV_KEY_ALIASES = {
     "telegram_bot_token": ("TELEGRAM_SUPPORT_BOT_TOKEN", "TELEGRAM_BOT_TOKEN"),
