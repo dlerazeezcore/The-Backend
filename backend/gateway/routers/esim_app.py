@@ -11,6 +11,7 @@ from uuid import uuid4
 import requests
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 
+from backend.esim.esimaccess.store import load_esimaccess_orders_items
 from backend.gateway.esim_app_store import (
     ROOT_ADMIN_PHONE,
     add_super_admin,
@@ -56,6 +57,10 @@ from backend.payments.fib.service import create_payment as fib_create_payment
 router = APIRouter()
 ROOT_ADMIN_PASSWORD = os.getenv("ESIM_ROOT_ADMIN_PASSWORD", "StrongPass123")
 DEFAULT_SMDP_ADDRESS = os.getenv("ESIMACCESS_DEFAULT_SMDP", "rsp-eu.simlessly.com")
+_TERMINAL_ESIM_STATUS_RE = re.compile(
+    r"\b(expired|refund|refunded|refunding|rfd|cancel|cancelled|canceled|cancelling|canceling|cnl|revoke|revoked|revoking|rvk|void|voided|terminated|closed)\b",
+    re.IGNORECASE,
+)
 
 _DESTINATIONS_CACHE_TTL_SEC = 180
 _COUNTRY_PLANS_CACHE_TTL_SEC = 180
@@ -1062,8 +1067,51 @@ def _parse_iso_datetime(raw: str | None) -> datetime | None:
         return None
 
 
+def _has_terminal_esim_status_signal(*values: Any) -> bool:
+    for value in values:
+        text = str(value or "").strip().lower()
+        if text and _TERMINAL_ESIM_STATUS_RE.search(text):
+            return True
+    return False
+
+
+def _linked_terminal_order_snapshot(order_reference: str) -> Dict[str, Any] | None:
+    target = str(order_reference or "").strip()
+    if not target:
+        return None
+
+    for row in load_esimaccess_orders_items():
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("order_reference") or row.get("orderReference") or "").strip() != target:
+            continue
+        if _has_terminal_esim_status_signal(
+            row.get("status"),
+            row.get("status_message"),
+            row.get("statusMessage"),
+            row.get("raw_query"),
+        ):
+            return row
+    return None
+
+
 def _apply_esim_lifecycle(esim: Dict[str, Any]) -> Dict[str, Any]:
     out = dict(esim)
+    linked_order = _linked_terminal_order_snapshot(
+        str(out.get("orderReference") or out.get("order_reference") or "").strip(),
+    )
+    if _has_terminal_esim_status_signal(
+        out.get("status"),
+        out.get("statusMessage"),
+        out.get("status_message"),
+        linked_order.get("status") if linked_order else "",
+        linked_order.get("status_message") if linked_order else "",
+        linked_order.get("raw_query") if linked_order else "",
+    ):
+        out["status"] = "expired"
+        out["daysLeft"] = 0
+        return out
+
     validity_days = int(out.get("validityDays") or out.get("daysLeft") or 0)
     activated_at = _parse_iso_datetime(out.get("activatedDate"))
     if validity_days <= 0 or activated_at is None:

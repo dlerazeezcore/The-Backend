@@ -12,6 +12,7 @@ from starlette.concurrency import run_in_threadpool
 
 from backend.auth.service import display_name, effective_owner_user_id, is_sub_user, resolve_token
 from backend.esim.esimaccess.store import (
+    load_esimaccess_orders_items,
     list_esimaccess_orders_for_agent,
     list_esimaccess_orders_for_owner,
     record_esimaccess_order,
@@ -54,6 +55,10 @@ DEFAULT_SMDP_ADDRESS = os.getenv("ESIMACCESS_DEFAULT_SMDP", "rsp-eu.simlessly.co
 
 _ESIM_BUNDLES_CACHE: dict[str, dict] = {}
 _ESIM_BUNDLES_TTL_SEC = 300
+_TERMINAL_ESIM_STATUS_RE = re.compile(
+    r"\b(expired|refund|refunded|refunding|rfd|cancel|cancelled|canceled|cancelling|canceling|cnl|revoke|revoked|revoking|rvk|void|voided|terminated|closed)\b",
+    re.IGNORECASE,
+)
 
 
 def clear_esim_runtime_caches() -> None:
@@ -391,6 +396,53 @@ def _query_access_provider_order(order_reference: str) -> dict:
     if not isinstance(esim_list, list) or not esim_list:
         raise HTTPException(status_code=404, detail="Order not found.")
     return _map_access_query_to_order(str(order_reference or "").strip(), response)
+
+
+def _has_terminal_esim_status_signal(*values: object) -> bool:
+    for value in values:
+        text = str(value or "").strip().lower()
+        if text and _TERMINAL_ESIM_STATUS_RE.search(text):
+            return True
+    return False
+
+
+def _stored_esimaccess_order_snapshot(order_reference: str) -> dict | None:
+    target = str(order_reference or "").strip()
+    if not target:
+        return None
+
+    for row in load_esimaccess_orders_items():
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("order_reference") or row.get("orderReference") or "").strip() == target:
+            return row
+    return None
+
+
+def _map_stored_snapshot_to_order(order_reference: str, snapshot: dict) -> dict:
+    activation_codes = snapshot.get("activation_codes") if isinstance(snapshot.get("activation_codes"), list) else []
+    iccid = str(snapshot.get("iccid") or "").strip()
+    status_message = str(snapshot.get("status_message") or snapshot.get("statusMessage") or snapshot.get("status") or "").strip()
+    normalized_status = "expired" if _has_terminal_esim_status_signal(
+        snapshot.get("status"),
+        snapshot.get("status_message"),
+        snapshot.get("statusMessage"),
+        snapshot.get("raw_query"),
+    ) else str(snapshot.get("status") or "processing").strip().lower()
+
+    return {
+        "provider": "esim_access",
+        "status": normalized_status,
+        "statusMessage": status_message,
+        "orderReference": str(order_reference or "").strip(),
+        "orderNo": str(order_reference or "").strip(),
+        "activationCodes": activation_codes,
+        "iccidList": [iccid] if iccid else [],
+        "quickInstallUrl": str(snapshot.get("quick_install_url") or "").strip(),
+        "raw": {
+            "snapshot": snapshot,
+        },
+    }
 
 
 def _first_raw_esim_item(mapped_order: dict | None) -> dict:
@@ -1427,6 +1479,15 @@ async def esim_order_get(order_id: str):
         policies = _ensure_any_esim_api_enabled()
         settings = _esim_settings()
         last_error = None
+        stored_snapshot = _stored_esimaccess_order_snapshot(str(order_id or "").strip())
+
+        if stored_snapshot and _has_terminal_esim_status_signal(
+            stored_snapshot.get("status"),
+            stored_snapshot.get("status_message"),
+            stored_snapshot.get("statusMessage"),
+            stored_snapshot.get("raw_query"),
+        ):
+            return _map_stored_snapshot_to_order(str(order_id or "").strip(), stored_snapshot)
 
         if _provider_enabled(policies, "esim_oasis"):
             try:
@@ -1455,8 +1516,19 @@ async def esim_order_get(order_id: str):
             query_payload = {"orderNo": str(order_id or "").strip(), "iccid": "", "pager": {"pageNum": 1, "pageSize": 20}}
             access_data = esim_access_query_profiles(query_payload)
             if _is_access_success(access_data):
-                return _map_access_query_to_order(str(order_id or "").strip(), access_data)
+                mapped = _map_access_query_to_order(str(order_id or "").strip(), access_data)
+                if stored_snapshot and _has_terminal_esim_status_signal(
+                    stored_snapshot.get("status"),
+                    stored_snapshot.get("status_message"),
+                    stored_snapshot.get("statusMessage"),
+                    stored_snapshot.get("raw_query"),
+                ):
+                    return _map_stored_snapshot_to_order(str(order_id or "").strip(), stored_snapshot)
+                return mapped
             last_error = access_data
+
+        if stored_snapshot:
+            return _map_stored_snapshot_to_order(str(order_id or "").strip(), stored_snapshot)
 
         if last_error is not None:
             raise HTTPException(status_code=400, detail=str(last_error))
