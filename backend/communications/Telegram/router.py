@@ -5,7 +5,7 @@ from fastapi.responses import JSONResponse
 
 from backend.auth.api import get_authenticated_user, read_request_payload
 from backend.gateway.admin_auth import require_super_admin_request
-from backend.gateway.esim_app_store import get_user_by_id
+from backend.gateway.esim_app_store import get_user_by_id, upsert_push_device
 
 from . import supabase_repo
 from .schemas import ConversationResponse, CustomerMessageRequest
@@ -64,6 +64,45 @@ def require_support_authenticated_user(request: Request) -> dict:
     raise HTTPException(status_code=401, detail="Unauthorized")
 
 
+def _normalize_push_platform(value: object) -> str:
+    platform = str(value or "").strip().lower()
+    if platform in {"ios", "android", "web"}:
+        return platform
+    return "web"
+
+
+def _read_push_enabled_header(value: object) -> bool:
+    text = str(value or "").strip().lower()
+    if not text:
+        return True
+    return text in {"1", "true", "yes", "on"}
+
+
+def _sync_support_push_device_from_headers(request: Request, user: dict) -> None:
+    install_id = str(request.headers.get("x-push-install-id") or "").strip()
+    token = str(request.headers.get("x-push-token") or "").strip()
+    if not install_id and not token:
+        return
+
+    user_id = str((user or {}).get("id") or "").strip()
+    if not user_id:
+        return
+
+    try:
+        upsert_push_device(
+            {
+                "installId": install_id,
+                "token": token,
+                "userId": user_id,
+                "platform": _normalize_push_platform(request.headers.get("x-push-platform")),
+                "notificationsEnabled": _read_push_enabled_header(request.headers.get("x-push-enabled")),
+                "supportChatOpen": True,
+            }
+        )
+    except Exception as exc:
+        print(f"WARNING: support push device sync from headers failed: {exc}")
+
+
 def _error_response(exc: Exception, default_status: int = 400) -> JSONResponse:
     if isinstance(exc, HTTPException):
         return JSONResponse(status_code=int(exc.status_code), content={"status": "error", "error": str(exc.detail)})
@@ -74,6 +113,7 @@ def _error_response(exc: Exception, default_status: int = 400) -> JSONResponse:
 def get_support_conversation(request: Request):
     try:
         user = require_support_authenticated_user(request)
+        _sync_support_push_device_from_headers(request, user)
         payload = load_current_conversation(user)
         response = ConversationResponse(**payload)
         return response.model_dump()
@@ -89,6 +129,7 @@ async def create_support_message(
 ):
     try:
         user = require_support_authenticated_user(request)
+        _sync_support_push_device_from_headers(request, user)
         text = _pick_message_text(body)
         upload_meta = None
         content_type = str(request.headers.get("content-type") or "").lower()
