@@ -13,7 +13,6 @@ from backend.communications.push_notifications.service import (
 from backend.gateway.esim_app_store import (
     disable_push_device,
     list_push_devices_for_user,
-    user_has_active_support_chat,
 )
 
 from . import supabase_repo
@@ -88,15 +87,6 @@ def _send_support_reply_push(*, conversation: dict[str, Any] | None, text: str, 
         return {
             "sent": False,
             "reason": "push_unavailable",
-            "customerUserId": customer_user_id,
-            "deviceCount": len(devices),
-            "tokenCount": token_count,
-        }
-
-    if user_has_active_support_chat(customer_user_id):
-        return {
-            "sent": False,
-            "reason": "customer_active_in_support",
             "customerUserId": customer_user_id,
             "deviceCount": len(devices),
             "tokenCount": token_count,
