@@ -79,6 +79,16 @@ def _looks_unset(value: Any) -> bool:
     return False
 
 
+def _unwrap_text(value: Any) -> str:
+    text = str(value or "").strip()
+    while len(text) >= 2:
+        if (text[0], text[-1]) in {('"', '"'), ("'", "'"), ("<", ">")}:
+            text = text[1:-1].strip()
+            continue
+        break
+    return text
+
+
 def _env_candidates(key: str) -> tuple[str, ...]:
     explicit = ENV_KEY_ALIASES.get(key, ())
     derived = (key.upper(),)
@@ -97,7 +107,7 @@ def read_setting(key: str, default: Any = None) -> Any:
 
 
 def read_text(key: str, default: str = "") -> str:
-    return str(read_setting(key, default) or "").strip()
+    return _unwrap_text(read_setting(key, default) or "")
 
 
 def read_int(key: str) -> int | None:
