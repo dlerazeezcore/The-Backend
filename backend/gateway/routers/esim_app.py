@@ -786,6 +786,16 @@ def _normalize_push_user_list(value: Any) -> list[str]:
     return out
 
 
+def _normalize_push_platform_list(value: Any) -> list[str]:
+    allowed = {"ios", "android"}
+    out: list[str] = []
+    for item in _normalize_push_user_list(value):
+        cleaned = str(item or "").strip().lower()
+        if cleaned in allowed and cleaned not in out:
+            out.append(cleaned)
+    return out
+
+
 def _user_ids_for_phone_values(values: list[str]) -> set[str]:
     user_ids: set[str] = set()
     for phone in values:
@@ -801,6 +811,7 @@ def _filter_push_devices_for_audience(
     *,
     include_user_ids: list[str] | None = None,
     exclude_user_ids: list[str] | None = None,
+    platforms: list[str] | None = None,
 ) -> List[Dict[str, Any]]:
     devices = _active_push_devices()
     if audience == "all":
@@ -834,6 +845,10 @@ def _filter_push_devices_for_audience(
 
     if exclude_set:
         filtered = [device for device in filtered if str(device.get("userId") or "").strip() not in exclude_set]
+
+    platform_set = {item for item in (platforms or []) if str(item).strip()}
+    if platform_set:
+        filtered = [device for device in filtered if str(device.get("platform") or "").strip().lower() in platform_set]
 
     return filtered
 
@@ -1726,8 +1741,19 @@ async def push_admin_send(payload: Dict[str, Any]):
         or payload.get("link")
         or ""
     ).strip()
+    ios_external_url = str(
+        payload.get("iosExternalUrl")
+        or payload.get("iosUrl")
+        or ""
+    ).strip()
+    android_external_url = str(
+        payload.get("androidExternalUrl")
+        or payload.get("androidUrl")
+        or ""
+    ).strip()
     audience = _normalize_push_audience(payload.get("audience"))
     kind = _normalize_push_kind(payload.get("kind"))
+    platforms = _normalize_push_platform_list(payload.get("platforms"))
     include_user_ids = _normalize_push_user_list(payload.get("includeUserIds"))
     exclude_user_ids = _normalize_push_user_list(payload.get("excludeUserIds"))
     include_phones = _normalize_push_user_list(payload.get("includePhones"))
@@ -1745,6 +1771,7 @@ async def push_admin_send(payload: Dict[str, Any]):
         audience,
         include_user_ids=include_user_ids,
         exclude_user_ids=exclude_user_ids,
+        platforms=platforms,
     )
     tokens = [str(device.get("token") or "").strip() for device in devices if str(device.get("token") or "").strip()]
     targeted_user_ids = sorted({str(device.get("userId") or "").strip() for device in devices if str(device.get("userId") or "").strip()})
@@ -1756,6 +1783,8 @@ async def push_admin_send(payload: Dict[str, Any]):
             "kind": kind,
             "route": route,
             "externalUrl": external_url,
+            "iosExternalUrl": ios_external_url,
+            "androidExternalUrl": android_external_url,
         },
         channel_id=_push_channel_for_kind(kind),
     )
@@ -1770,8 +1799,11 @@ async def push_admin_send(payload: Dict[str, Any]):
             "body": body,
             "route": route,
             "externalUrl": external_url,
+            "iosExternalUrl": ios_external_url,
+            "androidExternalUrl": android_external_url,
             "kind": kind,
             "audience": audience,
+            "platforms": platforms,
             "successCount": int(send_result.get("successCount") or 0),
             "failureCount": int(send_result.get("failureCount") or 0),
             "targetedDevices": len(tokens),
