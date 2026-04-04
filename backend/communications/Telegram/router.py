@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from fastapi import APIRouter, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
 
@@ -9,6 +11,7 @@ from backend.gateway.esim_app_store import get_user_by_id, upsert_push_device
 
 from . import supabase_repo
 from .schemas import ConversationResponse, CustomerMessageRequest
+from .settings import get_settings
 from .service import (
     ensure_telegram_webhook_registered,
     get_telegram_webhook_status,
@@ -21,6 +24,15 @@ from .service import (
 
 
 router = APIRouter()
+
+
+def _allow_unsigned_webhook_fallback() -> bool:
+    return str(os.getenv("TELEGRAM_SUPPORT_ALLOW_UNSIGNED_WEBHOOK") or "true").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 def _pick_message_text(*values: object) -> str:
@@ -214,14 +226,38 @@ async def telegram_webhook(
     request: Request,
     x_telegram_bot_api_secret_token: str | None = Header(default=None),
 ):
-    if not validate_telegram_webhook_secret(x_telegram_bot_api_secret_token):
-        return JSONResponse(status_code=401, content={"status": "error", "error": "Invalid Telegram webhook secret."})
     try:
         payload = await request.json()
     except Exception:
         return JSONResponse(status_code=400, content={"status": "error", "error": "Invalid JSON payload."})
+
+    payload_dict = payload if isinstance(payload, dict) else {}
+    update_id = payload_dict.get("update_id")
+    message = payload_dict.get("message") if isinstance(payload_dict.get("message"), dict) else {}
+    chat = message.get("chat") if isinstance(message.get("chat"), dict) else {}
+    chat_id = str(chat.get("id") or "").strip()
+
+    secret_ok = validate_telegram_webhook_secret(x_telegram_bot_api_secret_token)
+    if not secret_ok:
+        cfg = get_settings()
+        allow_unsigned = _allow_unsigned_webhook_fallback()
+        expected_chat_id = str(cfg.support_chat_id or "").strip()
+        if not allow_unsigned or not expected_chat_id or chat_id != expected_chat_id:
+            print(
+                "WARNING: telegram webhook rejected due to secret mismatch "
+                f"(update_id={update_id}, chat_id={chat_id})"
+            )
+            return JSONResponse(status_code=401, content={"status": "error", "error": "Invalid Telegram webhook secret."})
+        print(
+            "WARNING: telegram webhook accepted without matching secret "
+            f"(update_id={update_id}, chat_id={chat_id})"
+        )
+
+    print(f"INFO: telegram webhook received (update_id={update_id}, chat_id={chat_id})")
+
     try:
-        result = handle_telegram_update(payload if isinstance(payload, dict) else {})
+        result = handle_telegram_update(payload_dict)
+        print(f"INFO: telegram webhook handled result: {result}")
         return {"status": "ok", "result": result}
     except Exception as exc:
         return _error_response(exc, default_status=400)
