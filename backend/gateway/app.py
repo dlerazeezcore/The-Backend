@@ -111,7 +111,7 @@ async def _startup_check():
         print(f"WARNING: telegram webhook startup sync failed: {exc}")
 
     enable_polling_fallback = str(
-        os.getenv("TELEGRAM_SUPPORT_ENABLE_POLLING_FALLBACK", "1")
+        os.getenv("TELEGRAM_SUPPORT_ENABLE_POLLING_FALLBACK", "0")
     ).strip().lower() in {"1", "true", "yes", "on"}
     if enable_polling_fallback:
         global _telegram_polling_task
