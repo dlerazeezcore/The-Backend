@@ -149,6 +149,11 @@ def _table_candidates(table: str) -> tuple[str, ...]:
     return tuple(ordered)
 
 
+def _is_missing_table_error_text(text: object) -> bool:
+    lowered = str(text or "").lower()
+    return "could not find the table" in lowered or "couldn't find the table" in lowered or "pgrst205" in lowered
+
+
 def _get_rows(
     cfg: SupportSupabaseConfig,
     table: str,
@@ -337,6 +342,34 @@ def create_message(
     return created[0]
 
 
+def update_message_transport(
+    *,
+    message_id: str,
+    telegram_chat_id: str | None = None,
+    telegram_message_id: int | None = None,
+    reply_to_telegram_message_id: int | None = None,
+) -> dict[str, Any]:
+    cfg = _config()
+    body: dict[str, Any] = {}
+    if telegram_chat_id is not None:
+        body["telegram_chat_id"] = telegram_chat_id
+    if telegram_message_id is not None:
+        body["telegram_message_id"] = telegram_message_id
+    if reply_to_telegram_message_id is not None:
+        body["reply_to_telegram_message_id"] = reply_to_telegram_message_id
+    if not body:
+        raise RuntimeError("Message transport update requires at least one field.")
+    updated = _patch_rows(
+        cfg,
+        cfg.messages_table,
+        match={"id": f"eq.{message_id}"},
+        body=body,
+    )
+    if not updated:
+        raise RuntimeError("Support message transport update did not return a row.")
+    return updated[0]
+
+
 def upload_attachment(
     *,
     conversation_id: str,
@@ -434,33 +467,89 @@ def store_telegram_map(
 
 def find_conversation_by_telegram_message(*, telegram_chat_id: str, telegram_message_id: int) -> dict[str, Any] | None:
     cfg = _config()
+    try:
+        rows = _get_rows(
+            cfg,
+            cfg.telegram_map_table,
+            params={
+                "select": "conversation_id,app_message_id,telegram_chat_id,telegram_message_id,telegram_thread_id,direction",
+                "telegram_chat_id": f"eq.{telegram_chat_id}",
+                "telegram_message_id": f"eq.{telegram_message_id}",
+                "limit": "1",
+            },
+        )
+        if rows:
+            return rows[0]
+    except Exception as exc:
+        if not _is_missing_table_error_text(exc):
+            raise
+
     rows = _get_rows(
         cfg,
-        cfg.telegram_map_table,
+        cfg.messages_table,
         params={
-            "select": "conversation_id,app_message_id,telegram_chat_id,telegram_message_id,telegram_thread_id,direction",
+            "select": "conversation_id,id,telegram_chat_id,telegram_message_id,sender_type,created_at",
             "telegram_chat_id": f"eq.{telegram_chat_id}",
             "telegram_message_id": f"eq.{telegram_message_id}",
             "limit": "1",
         },
     )
-    return rows[0] if rows else None
+    if not rows:
+        return None
+    row = rows[0]
+    return {
+        "conversation_id": row.get("conversation_id"),
+        "app_message_id": row.get("id"),
+        "telegram_chat_id": row.get("telegram_chat_id"),
+        "telegram_message_id": row.get("telegram_message_id"),
+        "telegram_thread_id": None,
+        "direction": "from_support" if str(row.get("sender_type") or "") == "support" else "to_support",
+    }
 
 
 def find_latest_support_mapping_for_chat(*, telegram_chat_id: str) -> dict[str, Any] | None:
     cfg = _config()
+    try:
+        rows = _get_rows(
+            cfg,
+            cfg.telegram_map_table,
+            params={
+                "select": "conversation_id,app_message_id,telegram_chat_id,telegram_message_id,telegram_thread_id,direction,created_at",
+                "telegram_chat_id": f"eq.{telegram_chat_id}",
+                "direction": "eq.to_support",
+                "order": "created_at.desc",
+                "limit": "1",
+            },
+        )
+        if rows:
+            return rows[0]
+    except Exception as exc:
+        if not _is_missing_table_error_text(exc):
+            raise
+
     rows = _get_rows(
         cfg,
-        cfg.telegram_map_table,
+        cfg.messages_table,
         params={
-            "select": "conversation_id,app_message_id,telegram_chat_id,telegram_message_id,telegram_thread_id,direction,created_at",
+            "select": "conversation_id,id,telegram_chat_id,telegram_message_id,created_at",
             "telegram_chat_id": f"eq.{telegram_chat_id}",
-            "direction": "eq.to_support",
+            "sender_type": "eq.customer",
             "order": "created_at.desc",
             "limit": "1",
         },
     )
-    return rows[0] if rows else None
+    if not rows:
+        return None
+    row = rows[0]
+    return {
+        "conversation_id": row.get("conversation_id"),
+        "app_message_id": row.get("id"),
+        "telegram_chat_id": row.get("telegram_chat_id"),
+        "telegram_message_id": row.get("telegram_message_id"),
+        "telegram_thread_id": None,
+        "direction": "to_support",
+        "created_at": row.get("created_at"),
+    }
 
 
 def get_conversation_for_user(user: dict[str, Any]) -> dict[str, Any] | None:

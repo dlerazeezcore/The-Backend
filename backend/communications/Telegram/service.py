@@ -288,14 +288,22 @@ def send_customer_message(user: dict[str, Any], body: str, *, attachment: dict[s
     if not isinstance(telegram_message_id, int):
         raise RuntimeError("Telegram did not return a valid message_id.")
 
-    supabase_repo.store_telegram_map(
-        conversation_id=str(conversation.get("id") or ""),
-        app_message_id=str(message.get("id") or ""),
+    supabase_repo.update_message_transport(
+        message_id=str(message.get("id") or ""),
         telegram_chat_id=telegram_chat_id,
         telegram_message_id=telegram_message_id,
-        telegram_thread_id=thread_id,
-        direction="to_support",
     )
+    try:
+        supabase_repo.store_telegram_map(
+            conversation_id=str(conversation.get("id") or ""),
+            app_message_id=str(message.get("id") or ""),
+            telegram_chat_id=telegram_chat_id,
+            telegram_message_id=telegram_message_id,
+            telegram_thread_id=thread_id,
+            direction="to_support",
+        )
+    except Exception as exc:
+        print(f"WARNING: telegram message map store failed for customer message: {exc}")
     conversation = supabase_repo.touch_conversation(
         str(conversation.get("id") or ""),
         latest_customer_message_preview=_preview(text or f"[image] {attachment_meta.get('name') or 'attachment'}"),
@@ -415,14 +423,17 @@ def handle_telegram_update(update: dict[str, Any]) -> dict[str, Any]:
         reply_to_telegram_message_id=reply_to_message_id if isinstance(reply_to_message_id, int) else None,
         metadata=metadata,
     )
-    supabase_repo.store_telegram_map(
-        conversation_id=conversation_id,
-        app_message_id=str(saved.get("id") or ""),
-        telegram_chat_id=chat_id,
-        telegram_message_id=telegram_message_id,
-        telegram_thread_id=message.get("message_thread_id") if isinstance(message.get("message_thread_id"), int) else None,
-        direction="from_support",
-    )
+    try:
+        supabase_repo.store_telegram_map(
+            conversation_id=conversation_id,
+            app_message_id=str(saved.get("id") or ""),
+            telegram_chat_id=chat_id,
+            telegram_message_id=telegram_message_id,
+            telegram_thread_id=message.get("message_thread_id") if isinstance(message.get("message_thread_id"), int) else None,
+            direction="from_support",
+        )
+    except Exception as exc:
+        print(f"WARNING: telegram message map store failed for support reply: {exc}")
     supabase_repo.touch_conversation(
         conversation_id,
         latest_customer_message_preview=_preview(text or f"[image] {attachment_meta.get('name') or 'attachment'}"),
