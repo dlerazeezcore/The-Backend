@@ -477,11 +477,23 @@ def create_push_campaign(payload: Dict[str, Any]) -> Dict[str, Any]:
         "title": str(payload.get("title") or "").strip(),
         "body": str(payload.get("body") or "").strip(),
         "route": str(payload.get("route") or "").strip(),
+        "externalUrl": str(payload.get("externalUrl") or "").strip(),
         "kind": str(payload.get("kind") or "").strip(),
         "audience": str(payload.get("audience") or "").strip(),
         "successCount": int(payload.get("successCount") or 0),
         "failureCount": int(payload.get("failureCount") or 0),
         "targetedDevices": int(payload.get("targetedDevices") or 0),
+        "targetedUsers": int(payload.get("targetedUsers") or 0),
+        "includeUserIds": [
+            str(item).strip()
+            for item in (payload.get("includeUserIds") or [])
+            if str(item).strip()
+        ],
+        "excludeUserIds": [
+            str(item).strip()
+            for item in (payload.get("excludeUserIds") or [])
+            if str(item).strip()
+        ],
         "sentBy": str(payload.get("sentBy") or "").strip(),
         "createdAt": _now_iso(),
     }

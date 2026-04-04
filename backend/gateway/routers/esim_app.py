@@ -771,31 +771,71 @@ def _active_push_devices() -> List[Dict[str, Any]]:
     return out
 
 
-def _filter_push_devices_for_audience(audience: str) -> List[Dict[str, Any]]:
+def _normalize_push_user_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        raw_items = value
+    else:
+        raw = str(value or "").strip()
+        raw_items = raw.split(",") if raw else []
+
+    out: list[str] = []
+    for item in raw_items:
+        cleaned = str(item or "").strip()
+        if cleaned and cleaned not in out:
+            out.append(cleaned)
+    return out
+
+
+def _user_ids_for_phone_values(values: list[str]) -> set[str]:
+    user_ids: set[str] = set()
+    for phone in values:
+        user = get_user_by_phone(phone)
+        user_id = str((user or {}).get("id") or "").strip()
+        if user_id:
+            user_ids.add(user_id)
+    return user_ids
+
+
+def _filter_push_devices_for_audience(
+    audience: str,
+    *,
+    include_user_ids: list[str] | None = None,
+    exclude_user_ids: list[str] | None = None,
+) -> List[Dict[str, Any]]:
     devices = _active_push_devices()
     if audience == "all":
-        return devices
+        filtered = devices
+    elif audience == "authenticated":
+        filtered = [device for device in devices if str(device.get("userId") or "").strip()]
+    else:
+        loyalty_user_ids = {
+            str(user.get("id") or "").strip()
+            for user in list_users()
+            if bool(user.get("loyalty")) and str(user.get("id") or "").strip()
+        }
+        if audience == "loyalty":
+            filtered = [device for device in devices if str(device.get("userId") or "").strip() in loyalty_user_ids]
+        else:
+            active_user_ids = {
+                str(esim.get("userId") or "").strip()
+                for esim in list_esims()
+                if str(esim.get("status") or "").strip().lower() == "active" and str(esim.get("userId") or "").strip()
+            }
+            if audience == "active_esim":
+                filtered = [device for device in devices if str(device.get("userId") or "").strip() in active_user_ids]
+            else:
+                filtered = devices
 
-    if audience == "authenticated":
-        return [device for device in devices if str(device.get("userId") or "").strip()]
+    include_set = {item for item in (include_user_ids or []) if str(item).strip()}
+    exclude_set = {item for item in (exclude_user_ids or []) if str(item).strip()}
 
-    loyalty_user_ids = {
-        str(user.get("id") or "").strip()
-        for user in list_users()
-        if bool(user.get("loyalty")) and str(user.get("id") or "").strip()
-    }
-    if audience == "loyalty":
-        return [device for device in devices if str(device.get("userId") or "").strip() in loyalty_user_ids]
+    if include_set:
+        filtered = [device for device in filtered if str(device.get("userId") or "").strip() in include_set]
 
-    active_user_ids = {
-        str(esim.get("userId") or "").strip()
-        for esim in list_esims()
-        if str(esim.get("status") or "").strip().lower() == "active" and str(esim.get("userId") or "").strip()
-    }
-    if audience == "active_esim":
-        return [device for device in devices if str(device.get("userId") or "").strip() in active_user_ids]
+    if exclude_set:
+        filtered = [device for device in filtered if str(device.get("userId") or "").strip() not in exclude_set]
 
-    return devices
+    return filtered
 
 
 def _push_summary() -> Dict[str, Any]:
@@ -1680,16 +1720,34 @@ async def push_admin_send(payload: Dict[str, Any]):
     title = str(payload.get("title") or "").strip()
     body = str(payload.get("body") or "").strip()
     route = str(payload.get("route") or "").strip()
+    external_url = str(
+        payload.get("externalUrl")
+        or payload.get("url")
+        or payload.get("link")
+        or ""
+    ).strip()
     audience = _normalize_push_audience(payload.get("audience"))
     kind = _normalize_push_kind(payload.get("kind"))
+    include_user_ids = _normalize_push_user_list(payload.get("includeUserIds"))
+    exclude_user_ids = _normalize_push_user_list(payload.get("excludeUserIds"))
+    include_phones = _normalize_push_user_list(payload.get("includePhones"))
+    exclude_phones = _normalize_push_user_list(payload.get("excludePhones"))
+
+    include_user_ids = list(dict.fromkeys([*include_user_ids, *_user_ids_for_phone_values(include_phones)]))
+    exclude_user_ids = list(dict.fromkeys([*exclude_user_ids, *_user_ids_for_phone_values(exclude_phones)]))
 
     if not title or not body:
         raise HTTPException(status_code=400, detail="title and body are required")
     if not push_notifications_is_configured():
         raise HTTPException(status_code=503, detail="Firebase push notifications are not configured.")
 
-    devices = _filter_push_devices_for_audience(audience)
+    devices = _filter_push_devices_for_audience(
+        audience,
+        include_user_ids=include_user_ids,
+        exclude_user_ids=exclude_user_ids,
+    )
     tokens = [str(device.get("token") or "").strip() for device in devices if str(device.get("token") or "").strip()]
+    targeted_user_ids = sorted({str(device.get("userId") or "").strip() for device in devices if str(device.get("userId") or "").strip()})
     send_result = send_push_notification(
         tokens=tokens,
         title=title,
@@ -1697,6 +1755,7 @@ async def push_admin_send(payload: Dict[str, Any]):
         data={
             "kind": kind,
             "route": route,
+            "externalUrl": external_url,
         },
         channel_id=_push_channel_for_kind(kind),
     )
@@ -1710,12 +1769,16 @@ async def push_admin_send(payload: Dict[str, Any]):
             "title": title,
             "body": body,
             "route": route,
+            "externalUrl": external_url,
             "kind": kind,
             "audience": audience,
             "successCount": int(send_result.get("successCount") or 0),
             "failureCount": int(send_result.get("failureCount") or 0),
             "targetedDevices": len(tokens),
             "sentBy": admin_phone,
+            "includeUserIds": include_user_ids,
+            "excludeUserIds": exclude_user_ids,
+            "targetedUsers": len(targeted_user_ids),
         }
     )
 
@@ -1724,6 +1787,7 @@ async def push_admin_send(payload: Dict[str, Any]):
         "data": {
             **campaign,
             "invalidTokens": list(invalid_tokens),
+            "targetedUserIds": targeted_user_ids,
         },
     }
 
