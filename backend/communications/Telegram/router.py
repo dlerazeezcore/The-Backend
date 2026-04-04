@@ -23,6 +23,14 @@ from .service import (
 router = APIRouter()
 
 
+def _pick_message_text(*values: object) -> str:
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
 def _extract_local_user_id(request: Request) -> str:
     auth_header = str(request.headers.get("Authorization") or "").strip()
     if not auth_header.lower().startswith("bearer "):
@@ -81,16 +89,37 @@ async def create_support_message(
 ):
     try:
         user = require_support_authenticated_user(request)
-        text = body
+        text = _pick_message_text(body)
         upload_meta = None
-        if "multipart/form-data" not in str(request.headers.get("content-type") or "").lower():
-            payload_json = await request.json()
+        content_type = str(request.headers.get("content-type") or "").lower()
+        if "multipart/form-data" in content_type or "application/x-www-form-urlencoded" in content_type:
+            form = await request.form()
+            text = _pick_message_text(
+                text,
+                form.get("body"),
+                form.get("message"),
+                form.get("text"),
+                form.get("content"),
+            )
+        else:
+            try:
+                payload_json = await request.json()
+            except Exception:
+                payload_json = None
             if isinstance(payload_json, dict):
-                req = CustomerMessageRequest(**payload_json)
-                text = req.body
+                text = _pick_message_text(
+                    text,
+                    payload_json.get("body"),
+                    payload_json.get("message"),
+                    payload_json.get("text"),
+                    payload_json.get("content"),
+                )
+                if not text and file is None:
+                    req = CustomerMessageRequest(**payload_json)
+                    text = req.body
         if file is not None:
-            content_type = str(file.content_type or "").strip().lower()
-            if not content_type.startswith("image/"):
+            file_content_type = str(file.content_type or "").strip().lower()
+            if not file_content_type.startswith("image/"):
                 raise HTTPException(status_code=400, detail="Only image attachments are supported.")
             blob = await file.read()
             if not blob:
@@ -103,7 +132,7 @@ async def create_support_message(
                 conversation_id=conversation_id,
                 filename=str(file.filename or "attachment"),
                 content=blob,
-                content_type=content_type,
+                content_type=file_content_type,
             )
         payload = send_customer_message(user, text or "", attachment=upload_meta)
         return {
