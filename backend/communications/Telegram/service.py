@@ -606,6 +606,13 @@ def send_customer_message(
     telegram_result = _post_telegram(telegram_method, telegram_payload, settings=cfg)
     telegram_message_id = telegram_result.get("message_id")
     telegram_chat = telegram_result.get("chat") if isinstance(telegram_result.get("chat"), dict) else {}
+
+    # Self-heal Telegram delivery drift: after successful outbound support send,
+    # ensure webhook registration remains aligned with current configuration.
+    try:
+        ensure_telegram_webhook_registered(settings=cfg)
+    except Exception as exc:
+        print(f"WARNING: webhook ensure after customer send failed: {exc}")
     telegram_chat_id = _clean_text(telegram_chat.get("id")) or support_chat_id
 
     if not isinstance(telegram_message_id, int):
