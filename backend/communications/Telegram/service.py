@@ -79,32 +79,18 @@ def _support_push_tokens_for_user(user_id: str) -> list[str]:
     return tokens
 
 
-def _support_push_device_diagnostics(user_id: str) -> list[dict[str, Any]]:
-    devices: list[dict[str, Any]] = []
-    for device in list_push_devices_for_user(user_id):
-        devices.append(
-            {
-                "userId": _clean_text(device.get("userId")),
-                "notificationsEnabled": bool(device.get("notificationsEnabled")),
-                "supportChatOpen": bool(device.get("supportChatOpen")),
-                "supportChatSeenAt": _clean_text(device.get("supportChatSeenAt")),
-                "updatedAt": _clean_text(device.get("updatedAt")),
-                "tokenPreview": (_clean_text(device.get("token"))[:16] + "...") if _clean_text(device.get("token")) else "",
-            }
-        )
-    return devices
-
-
 def _send_support_reply_push(*, conversation: dict[str, Any] | None, text: str, attachment_name: str = "") -> dict[str, Any]:
     row = conversation if isinstance(conversation, dict) else {}
     customer_user_id = _clean_text(row.get("customer_user_id"))
-    devices = _support_push_device_diagnostics(customer_user_id) if customer_user_id else []
+    devices = list_push_devices_for_user(customer_user_id) if customer_user_id else []
+    token_count = len(_support_push_tokens_for_user(customer_user_id)) if customer_user_id else 0
     if not customer_user_id or not push_notifications_is_configured():
         return {
             "sent": False,
             "reason": "push_unavailable",
             "customerUserId": customer_user_id,
-            "devices": devices,
+            "deviceCount": len(devices),
+            "tokenCount": token_count,
         }
 
     if user_has_active_support_chat(customer_user_id):
@@ -112,7 +98,8 @@ def _send_support_reply_push(*, conversation: dict[str, Any] | None, text: str, 
             "sent": False,
             "reason": "customer_active_in_support",
             "customerUserId": customer_user_id,
-            "devices": devices,
+            "deviceCount": len(devices),
+            "tokenCount": token_count,
         }
 
     tokens = _support_push_tokens_for_user(customer_user_id)
@@ -121,7 +108,8 @@ def _send_support_reply_push(*, conversation: dict[str, Any] | None, text: str, 
             "sent": False,
             "reason": "no_tokens",
             "customerUserId": customer_user_id,
-            "devices": devices,
+            "deviceCount": len(devices),
+            "tokenCount": 0,
         }
 
     preview = _preview(text)
@@ -152,7 +140,7 @@ def _send_support_reply_push(*, conversation: dict[str, Any] | None, text: str, 
         "failureCount": int(result.get("failureCount") or 0),
         "customerUserId": customer_user_id,
         "tokenCount": len(tokens),
-        "devices": devices,
+        "deviceCount": len(devices),
     }
 
 
