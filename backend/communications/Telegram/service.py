@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import mimetypes
+from datetime import datetime, timezone
 from typing import Any
 
 import requests
@@ -22,6 +23,10 @@ from .settings import TelegramSupportSettings, get_settings
 
 def _clean_text(value: object) -> str:
     return str(value or "").strip()
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _settings() -> TelegramSupportSettings:
