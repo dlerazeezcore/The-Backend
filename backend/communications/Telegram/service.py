@@ -121,6 +121,18 @@ def _send_support_reply_push(*, conversation: dict[str, Any] | None, text: str, 
     }
 
 
+def _safe_support_reply_push(*, conversation: dict[str, Any] | None, text: str, attachment_name: str = "") -> dict[str, Any]:
+    try:
+        return _send_support_reply_push(
+            conversation=conversation,
+            text=text,
+            attachment_name=attachment_name,
+        )
+    except Exception as exc:
+        print(f"WARNING: support reply push failed: {exc}")
+        return {"sent": False, "reason": "push_error", "error": str(exc)}
+
+
 def _telegram_api_call(method: str, payload: dict[str, Any] | None = None, *, settings: TelegramSupportSettings | None = None) -> Any:
     cfg = settings or _settings()
     response = requests.post(
@@ -468,6 +480,19 @@ def handle_telegram_update(update: dict[str, Any]) -> dict[str, Any]:
     telegram_message_id = message.get("message_id")
     if not conversation_id or not isinstance(telegram_message_id, int):
         return {"status": "ignored", "reason": "Telegram reply is missing required identifiers."}
+
+    existing = supabase_repo.find_conversation_by_telegram_message(
+        telegram_chat_id=chat_id,
+        telegram_message_id=telegram_message_id,
+    )
+    if existing and _clean_text(existing.get("conversation_id")) == conversation_id:
+        return {
+            "status": "ok",
+            "conversation_id": conversation_id,
+            "message_id": _clean_text(existing.get("app_message_id")),
+            "duplicate": True,
+        }
+
     text = _telegram_message_text(message)
     attachment = _extract_telegram_photo_attachment(message, conversation_id=conversation_id)
     attachment_meta = _attachment_metadata(attachment)
@@ -506,7 +531,7 @@ def handle_telegram_update(update: dict[str, Any]) -> dict[str, Any]:
     )
     supabase_repo.touch_conversation(conversation_id)
     conversation = supabase_repo.get_conversation_by_id(conversation_id)
-    push_result = _send_support_reply_push(
+    push_result = _safe_support_reply_push(
         conversation=conversation,
         text=text,
         attachment_name=str(attachment_meta.get("name") or ""),
