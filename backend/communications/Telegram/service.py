@@ -6,6 +6,16 @@ from typing import Any
 
 import requests
 
+from backend.communications.push_notifications.service import (
+    is_configured as push_notifications_is_configured,
+    send_push_notification,
+)
+from backend.gateway.esim_app_store import (
+    disable_push_device,
+    list_push_devices_for_user,
+    user_has_active_support_chat,
+)
+
 from . import supabase_repo
 from .settings import TelegramSupportSettings, get_settings
 
@@ -53,6 +63,62 @@ def _preview(text: str, *, limit: int = 120) -> str:
     if len(value) <= limit:
         return value
     return value[: limit - 3].rstrip() + "..."
+
+
+def _support_push_tokens_for_user(user_id: str) -> list[str]:
+    tokens: list[str] = []
+    seen: set[str] = set()
+    for device in list_push_devices_for_user(user_id):
+        if not bool(device.get("notificationsEnabled")):
+            continue
+        token = _clean_text(device.get("token"))
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        tokens.append(token)
+    return tokens
+
+
+def _send_support_reply_push(*, conversation: dict[str, Any] | None, text: str, attachment_name: str = "") -> dict[str, Any]:
+    row = conversation if isinstance(conversation, dict) else {}
+    customer_user_id = _clean_text(row.get("customer_user_id"))
+    if not customer_user_id or not push_notifications_is_configured():
+        return {"sent": False, "reason": "push_unavailable"}
+
+    if user_has_active_support_chat(customer_user_id):
+        return {"sent": False, "reason": "customer_active_in_support"}
+
+    tokens = _support_push_tokens_for_user(customer_user_id)
+    if not tokens:
+        return {"sent": False, "reason": "no_tokens"}
+
+    preview = _preview(text)
+    if not preview and attachment_name:
+        preview = f"Support sent an image: {attachment_name}"
+    if not preview:
+        preview = "You have a new reply from support."
+
+    result = send_push_notification(
+        tokens=tokens,
+        title="Tulip Support",
+        body=preview,
+        data={
+            "kind": "support",
+            "route": "/support",
+        },
+        channel_id="support",
+    )
+
+    invalid_tokens = set(result.get("invalidTokens") or [])
+    for invalid_token in invalid_tokens:
+        disable_push_device(install_id="", token=invalid_token, user_id="")
+
+    return {
+        "sent": bool(result.get("successCount")),
+        "reason": "sent" if bool(result.get("successCount")) else "failed",
+        "successCount": int(result.get("successCount") or 0),
+        "failureCount": int(result.get("failureCount") or 0),
+    }
 
 
 def _telegram_api_call(method: str, payload: dict[str, Any] | None = None, *, settings: TelegramSupportSettings | None = None) -> Any:
@@ -439,8 +505,15 @@ def handle_telegram_update(update: dict[str, Any]) -> dict[str, Any]:
         latest_customer_message_preview=_preview(text or f"[image] {attachment_meta.get('name') or 'attachment'}"),
     )
     supabase_repo.touch_conversation(conversation_id)
+    conversation = supabase_repo.get_conversation_by_id(conversation_id)
+    push_result = _send_support_reply_push(
+        conversation=conversation,
+        text=text,
+        attachment_name=str(attachment_meta.get("name") or ""),
+    )
     return {
         "status": "ok",
         "conversation_id": conversation_id,
         "message_id": str(saved.get("id") or ""),
+        "push": push_result,
     }
