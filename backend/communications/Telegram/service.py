@@ -11,6 +11,7 @@ from backend.communications.push_notifications.service import (
     send_push_notification,
 )
 from backend.gateway.esim_app_store import (
+    ROOT_ADMIN_PHONE,
     disable_push_device,
     list_push_devices_for_user,
 )
@@ -78,28 +79,94 @@ def _support_push_tokens_for_user(user_id: str) -> list[str]:
     return tokens
 
 
+def _send_support_reply_push_via_gateway(
+    *,
+    customer_user_id: str,
+    title: str,
+    body: str,
+) -> dict[str, Any]:
+    cfg = _settings()
+    public_base = _clean_text(cfg.public_base_url).rstrip("/")
+    if not public_base:
+        return {
+            "sent": False,
+            "reason": "missing_public_base_url",
+            "customerUserId": customer_user_id,
+            "tokenCount": 0,
+            "deviceCount": 0,
+        }
+
+    endpoint = f"{public_base}/api/esim-app/push/admin/send"
+    try:
+        response = requests.post(
+            endpoint,
+            json={
+                "adminPhone": ROOT_ADMIN_PHONE,
+                "title": title,
+                "body": body,
+                "kind": "support",
+                "route": "/support",
+                "audience": "all",
+                "includeUserIds": [customer_user_id],
+            },
+            timeout=cfg.timeout_seconds,
+        )
+    except Exception as exc:
+        return {
+            "sent": False,
+            "reason": "gateway_push_request_failed",
+            "error": str(exc),
+            "customerUserId": customer_user_id,
+            "tokenCount": 0,
+            "deviceCount": 0,
+        }
+
+    payload: dict[str, Any] = {}
+    try:
+        body_json = response.json()
+        payload = body_json if isinstance(body_json, dict) else {}
+    except Exception:
+        payload = {}
+
+    if response.status_code >= 400 or not bool(payload.get("success")):
+        return {
+            "sent": False,
+            "reason": "gateway_push_failed",
+            "statusCode": int(response.status_code),
+            "error": _clean_text(payload.get("error")) or _clean_text(payload.get("detail")) or response.text[:200],
+            "customerUserId": customer_user_id,
+            "tokenCount": 0,
+            "deviceCount": 0,
+        }
+
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    success_count = int(data.get("successCount") or 0)
+    failure_count = int(data.get("failureCount") or 0)
+    targeted_devices = int(data.get("targetedDevices") or 0)
+    return {
+        "sent": success_count > 0,
+        "reason": "sent" if success_count > 0 else "failed",
+        "successCount": success_count,
+        "failureCount": failure_count,
+        "customerUserId": customer_user_id,
+        "tokenCount": targeted_devices,
+        "deviceCount": targeted_devices,
+        "deliveryMode": "gateway_admin_send",
+    }
+
+
 def _send_support_reply_push(*, conversation: dict[str, Any] | None, text: str, attachment_name: str = "") -> dict[str, Any]:
     row = conversation if isinstance(conversation, dict) else {}
     customer_user_id = _clean_text(row.get("customer_user_id"))
     devices = list_push_devices_for_user(customer_user_id) if customer_user_id else []
     token_count = len(_support_push_tokens_for_user(customer_user_id)) if customer_user_id else 0
-    if not customer_user_id or not push_notifications_is_configured():
+    if not customer_user_id:
         return {
             "sent": False,
-            "reason": "push_unavailable",
+            "reason": "missing_customer_user_id",
             "customerUserId": customer_user_id,
             "deviceCount": len(devices),
             "tokenCount": token_count,
-        }
-
-    tokens = _support_push_tokens_for_user(customer_user_id)
-    if not tokens:
-        return {
-            "sent": False,
-            "reason": "no_tokens",
-            "customerUserId": customer_user_id,
-            "deviceCount": len(devices),
-            "tokenCount": 0,
         }
 
     preview = _preview(text)
@@ -107,6 +174,21 @@ def _send_support_reply_push(*, conversation: dict[str, Any] | None, text: str, 
         preview = f"Support sent an image: {attachment_name}"
     if not preview:
         preview = "You have a new reply from support."
+
+    if not push_notifications_is_configured():
+        return _send_support_reply_push_via_gateway(
+            customer_user_id=customer_user_id,
+            title="Tulip Support",
+            body=preview,
+        )
+
+    tokens = _support_push_tokens_for_user(customer_user_id)
+    if not tokens:
+        return _send_support_reply_push_via_gateway(
+            customer_user_id=customer_user_id,
+            title="Tulip Support",
+            body=preview,
+        )
 
     result = send_push_notification(
         tokens=tokens,
@@ -123,14 +205,36 @@ def _send_support_reply_push(*, conversation: dict[str, Any] | None, text: str, 
     for invalid_token in invalid_tokens:
         disable_push_device(install_id="", token=invalid_token, user_id="")
 
+    success_count = int(result.get("successCount") or 0)
+    if success_count > 0:
+        return {
+            "sent": True,
+            "reason": "sent",
+            "successCount": success_count,
+            "failureCount": int(result.get("failureCount") or 0),
+            "customerUserId": customer_user_id,
+            "tokenCount": len(tokens),
+            "deviceCount": len(devices),
+            "deliveryMode": "direct",
+        }
+
+    fallback = _send_support_reply_push_via_gateway(
+        customer_user_id=customer_user_id,
+        title="Tulip Support",
+        body=preview,
+    )
+    if fallback.get("sent"):
+        return fallback
+
     return {
-        "sent": bool(result.get("successCount")),
-        "reason": "sent" if bool(result.get("successCount")) else "failed",
-        "successCount": int(result.get("successCount") or 0),
+        "sent": False,
+        "reason": "failed",
+        "successCount": 0,
         "failureCount": int(result.get("failureCount") or 0),
         "customerUserId": customer_user_id,
         "tokenCount": len(tokens),
         "deviceCount": len(devices),
+        "deliveryMode": "direct",
     }
 
 
