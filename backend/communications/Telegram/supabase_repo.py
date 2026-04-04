@@ -10,6 +10,15 @@ import requests
 
 from .settings import get_settings
 
+TABLE_FALLBACKS = {
+    "corevia_support_conversations": ("support_conversations",),
+    "corevia_support_messages": ("support_messages",),
+    "corevia_support_telegram_map": ("support_telegram_map",),
+    "support_conversations": ("corevia_support_conversations",),
+    "support_messages": ("corevia_support_messages",),
+    "support_telegram_map": ("corevia_support_telegram_map",),
+}
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -116,6 +125,30 @@ def _is_bucket_missing_response(response: requests.Response) -> bool:
     return False
 
 
+def _is_missing_table_response(response: requests.Response) -> bool:
+    text = str(getattr(response, "text", "") or "")
+    lowered = text.lower()
+    if response.status_code != 404:
+        return False
+    if '"code":"pgrst205"' in lowered or '"code": "pgrst205"' in lowered:
+        return True
+    if "could not find the table" in lowered:
+        return True
+    if "couldn't find the table" in lowered:
+        return True
+    return False
+
+
+def _table_candidates(table: str) -> tuple[str, ...]:
+    cleaned = str(table or "").strip()
+    fallbacks = TABLE_FALLBACKS.get(cleaned, ())
+    ordered: list[str] = []
+    for candidate in (cleaned, *fallbacks):
+        if candidate and candidate not in ordered:
+            ordered.append(candidate)
+    return tuple(ordered)
+
+
 def _get_rows(
     cfg: SupportSupabaseConfig,
     table: str,
@@ -123,30 +156,46 @@ def _get_rows(
     params: dict[str, str],
 ) -> list[dict[str, Any]]:
     _ensure_config(cfg)
-    response = requests.get(
-        _endpoint(cfg, table),
-        headers=_headers(cfg),
-        params=params,
-        timeout=cfg.timeout_seconds,
-    )
-    if response.status_code >= 400:
+    last_error: requests.Response | None = None
+    for candidate in _table_candidates(table):
+        response = requests.get(
+            _endpoint(cfg, candidate),
+            headers=_headers(cfg),
+            params=params,
+            timeout=cfg.timeout_seconds,
+        )
+        if response.status_code < 400:
+            payload = response.json()
+            return payload if isinstance(payload, list) else []
+        if _is_missing_table_response(response):
+            last_error = response
+            continue
         raise RuntimeError(f"Supabase select failed ({response.status_code}): {response.text[:300]}")
-    payload = response.json()
-    return payload if isinstance(payload, list) else []
+    if last_error is not None:
+        raise RuntimeError(f"Supabase select failed ({last_error.status_code}): {last_error.text[:300]}")
+    return []
 
 
 def _insert_rows(cfg: SupportSupabaseConfig, table: str, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     _ensure_config(cfg)
-    response = requests.post(
-        _endpoint(cfg, table),
-        headers=_headers(cfg, prefer="return=representation"),
-        json=rows,
-        timeout=cfg.timeout_seconds,
-    )
-    if response.status_code >= 400:
+    last_error: requests.Response | None = None
+    for candidate in _table_candidates(table):
+        response = requests.post(
+            _endpoint(cfg, candidate),
+            headers=_headers(cfg, prefer="return=representation"),
+            json=rows,
+            timeout=cfg.timeout_seconds,
+        )
+        if response.status_code < 400:
+            payload = response.json()
+            return payload if isinstance(payload, list) else []
+        if _is_missing_table_response(response):
+            last_error = response
+            continue
         raise RuntimeError(f"Supabase insert failed ({response.status_code}): {response.text[:300]}")
-    payload = response.json()
-    return payload if isinstance(payload, list) else []
+    if last_error is not None:
+        raise RuntimeError(f"Supabase insert failed ({last_error.status_code}): {last_error.text[:300]}")
+    return []
 
 
 def _patch_rows(
@@ -157,17 +206,25 @@ def _patch_rows(
     body: dict[str, Any],
 ) -> list[dict[str, Any]]:
     _ensure_config(cfg)
-    response = requests.patch(
-        _endpoint(cfg, table),
-        headers=_headers(cfg, prefer="return=representation"),
-        params=match,
-        json=body,
-        timeout=cfg.timeout_seconds,
-    )
-    if response.status_code >= 400:
+    last_error: requests.Response | None = None
+    for candidate in _table_candidates(table):
+        response = requests.patch(
+            _endpoint(cfg, candidate),
+            headers=_headers(cfg, prefer="return=representation"),
+            params=match,
+            json=body,
+            timeout=cfg.timeout_seconds,
+        )
+        if response.status_code < 400:
+            payload = response.json()
+            return payload if isinstance(payload, list) else []
+        if _is_missing_table_response(response):
+            last_error = response
+            continue
         raise RuntimeError(f"Supabase update failed ({response.status_code}): {response.text[:300]}")
-    payload = response.json()
-    return payload if isinstance(payload, list) else []
+    if last_error is not None:
+        raise RuntimeError(f"Supabase update failed ({last_error.status_code}): {last_error.text[:300]}")
+    return []
 
 
 def get_or_create_open_conversation(user: dict[str, Any]) -> dict[str, Any]:

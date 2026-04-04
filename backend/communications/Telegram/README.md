@@ -54,6 +54,14 @@ Optional:
 - `TELEGRAM_SUPPORT_MESSAGES_TABLE`
 - `TELEGRAM_SUPPORT_MAP_TABLE`
 
+The SQL file in this folder creates the default table names:
+
+- `support_conversations`
+- `support_messages`
+- `support_telegram_map`
+
+The backend also accepts the older `corevia_support_*` names for compatibility, but the `support_*` names are the clean default for new setups.
+
 Backwards-compatible legacy env names are still accepted, but the `TELEGRAM_SUPPORT_*` names are the preferred standard for future bots.
 
 ## API Endpoints
