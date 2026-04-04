@@ -79,18 +79,50 @@ def _support_push_tokens_for_user(user_id: str) -> list[str]:
     return tokens
 
 
+def _support_push_device_diagnostics(user_id: str) -> list[dict[str, Any]]:
+    devices: list[dict[str, Any]] = []
+    for device in list_push_devices_for_user(user_id):
+        devices.append(
+            {
+                "userId": _clean_text(device.get("userId")),
+                "notificationsEnabled": bool(device.get("notificationsEnabled")),
+                "supportChatOpen": bool(device.get("supportChatOpen")),
+                "supportChatSeenAt": _clean_text(device.get("supportChatSeenAt")),
+                "updatedAt": _clean_text(device.get("updatedAt")),
+                "tokenPreview": (_clean_text(device.get("token"))[:16] + "...") if _clean_text(device.get("token")) else "",
+            }
+        )
+    return devices
+
+
 def _send_support_reply_push(*, conversation: dict[str, Any] | None, text: str, attachment_name: str = "") -> dict[str, Any]:
     row = conversation if isinstance(conversation, dict) else {}
     customer_user_id = _clean_text(row.get("customer_user_id"))
+    devices = _support_push_device_diagnostics(customer_user_id) if customer_user_id else []
     if not customer_user_id or not push_notifications_is_configured():
-        return {"sent": False, "reason": "push_unavailable"}
+        return {
+            "sent": False,
+            "reason": "push_unavailable",
+            "customerUserId": customer_user_id,
+            "devices": devices,
+        }
 
     if user_has_active_support_chat(customer_user_id):
-        return {"sent": False, "reason": "customer_active_in_support"}
+        return {
+            "sent": False,
+            "reason": "customer_active_in_support",
+            "customerUserId": customer_user_id,
+            "devices": devices,
+        }
 
     tokens = _support_push_tokens_for_user(customer_user_id)
     if not tokens:
-        return {"sent": False, "reason": "no_tokens"}
+        return {
+            "sent": False,
+            "reason": "no_tokens",
+            "customerUserId": customer_user_id,
+            "devices": devices,
+        }
 
     preview = _preview(text)
     if not preview and attachment_name:
@@ -118,16 +150,21 @@ def _send_support_reply_push(*, conversation: dict[str, Any] | None, text: str, 
         "reason": "sent" if bool(result.get("successCount")) else "failed",
         "successCount": int(result.get("successCount") or 0),
         "failureCount": int(result.get("failureCount") or 0),
+        "customerUserId": customer_user_id,
+        "tokenCount": len(tokens),
+        "devices": devices,
     }
 
 
 def _safe_support_reply_push(*, conversation: dict[str, Any] | None, text: str, attachment_name: str = "") -> dict[str, Any]:
     try:
-        return _send_support_reply_push(
+        result = _send_support_reply_push(
             conversation=conversation,
             text=text,
             attachment_name=attachment_name,
         )
+        print(f"INFO: support reply push result: {result}")
+        return result
     except Exception as exc:
         print(f"WARNING: support reply push failed: {exc}")
         return {"sent": False, "reason": "push_error", "error": str(exc)}
@@ -525,12 +562,11 @@ def handle_telegram_update(update: dict[str, Any]) -> dict[str, Any]:
         )
     except Exception as exc:
         print(f"WARNING: telegram message map store failed for support reply: {exc}")
-    supabase_repo.touch_conversation(
+    updated_conversation = supabase_repo.touch_conversation(
         conversation_id,
         latest_customer_message_preview=_preview(text or f"[image] {attachment_meta.get('name') or 'attachment'}"),
     )
-    supabase_repo.touch_conversation(conversation_id)
-    conversation = supabase_repo.get_conversation_by_id(conversation_id)
+    conversation = updated_conversation if isinstance(updated_conversation, dict) else mapping
     push_result = _safe_support_reply_push(
         conversation=conversation,
         text=text,
