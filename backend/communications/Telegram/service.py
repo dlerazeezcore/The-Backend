@@ -79,7 +79,7 @@ def _support_push_tokens_for_user(user_id: str) -> list[str]:
     return tokens
 
 
-def _support_push_tokens_from_conversation_messages(conversation_id: str) -> list[str]:
+def _support_push_targets_from_conversation_messages(conversation_id: str) -> list[dict[str, str]]:
     target_conversation_id = _clean_text(conversation_id)
     if not target_conversation_id:
         return []
@@ -90,7 +90,7 @@ def _support_push_tokens_from_conversation_messages(conversation_id: str) -> lis
         print(f"WARNING: failed to load conversation messages for push token fallback: {exc}")
         return []
 
-    tokens: list[str] = []
+    targets: list[dict[str, str]] = []
     seen: set[str] = set()
     for row in reversed(rows):
         if str(row.get("sender_type") or "").strip().lower() != "customer":
@@ -107,12 +107,47 @@ def _support_push_tokens_from_conversation_messages(conversation_id: str) -> lis
         )
         if not token or token in seen:
             continue
+        notifications_enabled = bool(support_push_target.get("notificationsEnabled", True))
+        if not notifications_enabled:
+            continue
         seen.add(token)
-        tokens.append(token)
-        if len(tokens) >= 3:
+        targets.append(
+            {
+                "token": token,
+                "installId": _clean_text(support_push_target.get("installId")),
+                "platform": _clean_text(support_push_target.get("platform")).lower(),
+            }
+        )
+        if len(targets) >= 3:
             break
 
-    return tokens
+    return targets
+
+
+def _support_push_tokens_from_conversation_messages(conversation_id: str) -> list[str]:
+    return [
+        _clean_text(target.get("token"))
+        for target in _support_push_targets_from_conversation_messages(conversation_id)
+        if _clean_text(target.get("token"))
+    ]
+
+
+def _preferred_support_push_tokens(customer_user_id: str, conversation_id: str) -> list[str]:
+    preferred: list[str] = []
+    seen: set[str] = set()
+
+    if conversation_id:
+        for token in _support_push_tokens_from_conversation_messages(conversation_id):
+            if token and token not in seen:
+                seen.add(token)
+                preferred.append(token)
+
+    for token in _support_push_tokens_for_user(customer_user_id):
+        if token and token not in seen:
+            seen.add(token)
+            preferred.append(token)
+
+    return preferred
 
 
 def _send_support_reply_push_via_gateway(
@@ -219,9 +254,7 @@ def _send_support_reply_push(*, conversation: dict[str, Any] | None, text: str, 
             body=preview,
         )
 
-    tokens = _support_push_tokens_for_user(customer_user_id)
-    if not tokens and conversation_id:
-        tokens = _support_push_tokens_from_conversation_messages(conversation_id)
+    tokens = _preferred_support_push_tokens(customer_user_id, conversation_id)
     if not tokens:
         return _send_support_reply_push_via_gateway(
             customer_user_id=customer_user_id,
@@ -255,6 +288,7 @@ def _send_support_reply_push(*, conversation: dict[str, Any] | None, text: str, 
             "tokenCount": len(tokens),
             "deviceCount": len(devices),
             "deliveryMode": "direct",
+            "targeting": "preferred_support_tokens",
         }
 
     fallback = _send_support_reply_push_via_gateway(
@@ -274,6 +308,7 @@ def _send_support_reply_push(*, conversation: dict[str, Any] | None, text: str, 
         "tokenCount": len(tokens),
         "deviceCount": len(devices),
         "deliveryMode": "direct",
+        "targeting": "preferred_support_tokens",
     }
 
 
