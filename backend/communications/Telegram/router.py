@@ -240,7 +240,14 @@ async def telegram_webhook(
     update_id = payload_dict.get("update_id")
     update_type = ""
     message: dict = {}
-    for candidate in ("message", "edited_message", "channel_post", "edited_channel_post"):
+    for candidate in (
+        "message",
+        "edited_message",
+        "channel_post",
+        "edited_channel_post",
+        "business_message",
+        "edited_business_message",
+    ):
         maybe_message = payload_dict.get(candidate)
         if isinstance(maybe_message, dict):
             update_type = candidate

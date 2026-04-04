@@ -661,7 +661,14 @@ def _sender_name(message: dict[str, Any]) -> str:
 
 
 def _extract_supported_update_message(update: dict[str, Any]) -> tuple[dict[str, Any] | None, str]:
-    for key in ("message", "edited_message", "channel_post", "edited_channel_post"):
+    for key in (
+        "message",
+        "edited_message",
+        "channel_post",
+        "edited_channel_post",
+        "business_message",
+        "edited_business_message",
+    ):
         value = update.get(key)
         if isinstance(value, dict):
             return value, key
