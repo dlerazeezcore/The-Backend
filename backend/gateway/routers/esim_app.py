@@ -735,7 +735,10 @@ def _extract_user_id_from_request(request: Request | None) -> str:
 
 def _extract_optional_user_id(payload: Dict[str, Any], request: Request | None = None) -> str:
     if "userId" in payload:
-        return str(payload.get("userId") or "").strip()
+        explicit_user_id = str(payload.get("userId") or "").strip()
+        if explicit_user_id:
+            return explicit_user_id
+        return _extract_user_id_from_request(request)
     return _extract_user_id_from_request(request)
 
 
