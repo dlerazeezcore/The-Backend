@@ -9,3 +9,4 @@ venv/
 .env
 .env.*
 .secrets/
+backend/communications/Telegram/config.json

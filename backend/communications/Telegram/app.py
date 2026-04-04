@@ -8,6 +8,7 @@ from backend.auth.api import create_auth_router
 from backend.core.runtime import configure_cors, load_project_env
 
 from .router import router
+from .service import ensure_telegram_webhook_registered
 
 
 BUILD_ID = "telegram-support-v1"
@@ -18,6 +19,15 @@ app = FastAPI(title="Telegram Support Backend", version="1.0.0")
 configure_cors(app)
 app.include_router(create_auth_router(), prefix="/api/auth")
 app.include_router(router)
+
+
+@app.on_event("startup")
+async def _startup_sync_telegram_webhook() -> None:
+    try:
+        result = ensure_telegram_webhook_registered()
+        print(f"telegram webhook startup sync: {result}")
+    except Exception as exc:
+        print(f"WARNING: telegram webhook startup sync failed: {exc}")
 
 
 @app.get("/health")

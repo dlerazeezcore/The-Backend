@@ -8,7 +8,7 @@ from typing import Any
 
 import requests
 
-from .settings import read_float, read_text
+from .settings import get_settings
 
 
 def _now_iso() -> str:
@@ -46,14 +46,15 @@ class SupportSupabaseConfig:
 
 
 def _config() -> SupportSupabaseConfig:
+    settings = get_settings()
     return SupportSupabaseConfig(
-        url=read_text("supabase_url").rstrip("/"),
-        key=read_text("supabase_service_role_key"),
-        timeout_seconds=read_float("supabase_timeout_seconds", 20.0),
-        conversations_table=read_text("support_conversations_table", "support_conversations") or "support_conversations",
-        messages_table=read_text("support_messages_table", "support_messages") or "support_messages",
-        telegram_map_table=read_text("support_telegram_map_table", "support_telegram_map") or "support_telegram_map",
-        attachments_bucket=read_text("support_attachments_bucket", "support-attachments") or "support-attachments",
+        url=settings.supabase_url,
+        key=settings.supabase_service_role_key,
+        timeout_seconds=settings.supabase_timeout_seconds,
+        conversations_table=settings.conversations_table,
+        messages_table=settings.messages_table,
+        telegram_map_table=settings.telegram_map_table,
+        attachments_bucket=settings.attachments_bucket,
     )
 
 

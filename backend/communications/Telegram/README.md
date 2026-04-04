@@ -2,7 +2,7 @@
 
 Self-contained FastAPI module for in-app customer support with Telegram as the support-agent surface.
 
-This folder is intentionally standalone so it can be prepared without editing any other backend folders.
+This folder is intentionally standalone so it can be prepared without editing other backend folders or frontend API contracts.
 
 ## What It Does
 
@@ -17,11 +17,11 @@ This folder is intentionally standalone so it can be prepared without editing an
 - `app.py`: standalone FastAPI app entrypoint
 - `router.py`: API routes
 - `service.py`: Telegram send + webhook handling
+- `settings.py`: env-first runtime configuration
 - `supabase_repo.py`: direct Supabase REST access for support tables
 - `schemas.py`: request/response models
 - `supabase_support_chat.sql`: SQL to create the needed tables
 - `figma_ui_prompts.md`: prompt pack for the Figma support UI
-- `config.json`: file-based runtime configuration
 
 ## Standalone Run
 
@@ -31,22 +31,30 @@ From the repo root:
 uvicorn backend.communications.Telegram.app:app --host 0.0.0.0 --port 5090
 ```
 
-## Required Configuration
+## Required Environment Variables
 
-Edit `config.json` and fill:
+The module is env-first. You can copy `backend/communications/Telegram/.env.example` and set:
 
-- `telegram_bot_token`
-- `telegram_support_chat_id`
-- `telegram_webhook_secret`
-- `supabase_service_role_key`
+- `TELEGRAM_SUPPORT_BOT_TOKEN`
+- `TELEGRAM_SUPPORT_CHAT_ID`
+- `TELEGRAM_SUPPORT_WEBHOOK_SECRET`
+- `TELEGRAM_SUPPORT_PUBLIC_BASE_URL`
+- `SUPABASE_URL`
+- `SUPABASE_SERVICE_ROLE_KEY`
 
 Optional:
 
-- `telegram_support_message_thread_id`
-- `support_attachments_bucket`
-- `support_conversations_table`
-- `support_messages_table`
-- `support_telegram_map_table`
+- `TELEGRAM_SUPPORT_MESSAGE_THREAD_ID`
+- `TELEGRAM_SUPPORT_TIMEOUT_SECONDS`
+- `TELEGRAM_SUPPORT_WEBHOOK_SYNC_ON_STARTUP`
+- `TELEGRAM_SUPPORT_ALLOWED_UPDATES`
+- `SUPABASE_TIMEOUT_SECONDS`
+- `TELEGRAM_SUPPORT_ATTACHMENTS_BUCKET`
+- `TELEGRAM_SUPPORT_CONVERSATIONS_TABLE`
+- `TELEGRAM_SUPPORT_MESSAGES_TABLE`
+- `TELEGRAM_SUPPORT_MAP_TABLE`
+
+Backwards-compatible legacy env names are still accepted, but the `TELEGRAM_SUPPORT_*` names are the preferred standard for future bots.
 
 ## API Endpoints
 
@@ -55,6 +63,9 @@ Optional:
 - `GET /api/telegram-support/conversation`
 - `POST /api/telegram-support/messages`
 - `POST /api/telegram-support/webhook`
+- `GET /api/telegram-support/admin/webhook`
+- `POST /api/telegram-support/admin/webhook/register`
+- `POST /api/telegram-support/admin/webhook/ensure`
 
 ## Frontend Contract
 
@@ -93,7 +104,8 @@ Returns:
 1. Create a Telegram bot with BotFather.
 2. Add the bot to your private support group.
 3. Make the bot an admin if needed.
-4. Set webhook:
+4. Set `TELEGRAM_SUPPORT_PUBLIC_BASE_URL` to your public backend URL.
+5. Set webhook manually once, or let backend startup sync do it:
 
 ```bash
 curl -X POST "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/setWebhook" \
@@ -110,3 +122,4 @@ curl -X POST "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/setWebhook" \
 - Staff replies must be sent as Telegram replies to the forwarded customer message.
 - The app remains fully in-app; customers are never redirected to Telegram.
 - This module is also wired into the main backend gateway in this repo.
+- Existing frontend routes are unchanged; the cleanup only affects backend internals and configuration.

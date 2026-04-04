@@ -69,6 +69,13 @@ async def _startup_check():
             print(f"eSIM cache prewarm done: {result}")
         except Exception as exc:
             print(f"WARNING: eSIM cache prewarm skipped: {exc}")
+    try:
+        from backend.communications.Telegram.service import ensure_telegram_webhook_registered
+
+        result = await run_in_threadpool(ensure_telegram_webhook_registered)
+        print(f"telegram webhook startup sync: {result}")
+    except Exception as exc:
+        print(f"WARNING: telegram webhook startup sync failed: {exc}")
 
 
 @app.get("/__build")

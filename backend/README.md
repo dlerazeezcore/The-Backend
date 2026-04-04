@@ -314,12 +314,19 @@ Telegram webhook endpoint:
 
 - `POST /api/telegram-support/webhook`
 
+Admin webhook endpoints:
+
+- `GET /api/telegram-support/admin/webhook`
+- `POST /api/telegram-support/admin/webhook/register`
+- `POST /api/telegram-support/admin/webhook/ensure`
+
 Runtime behavior notes:
 
 - Customer-facing routes require the same main bearer auth used by the rest of the backend.
 - Customer messages are persisted in Supabase support tables and forwarded to a private Telegram support chat.
 - Staff replies are expected as Telegram replies to the forwarded message so they can be mapped back into the in-app thread.
 - The same router is mounted in the unified gateway and in the standalone Telegram app.
+- Webhook self-registration is env-driven via `TELEGRAM_SUPPORT_PUBLIC_BASE_URL` plus the bot token and webhook secret.
 
 ### Payments / FIB
 
@@ -527,19 +534,23 @@ Provider integration notes:
 - `WHATSAPP_PHONE_NUMBER_ID`
 - `WHATSAPP_API_VERSION`
 
-### Telegram support config (`backend/communications/Telegram/config.json`)
+### Telegram support env vars (`backend/communications/Telegram/.env.example`)
 
-- `telegram_bot_token`
-- `telegram_support_chat_id`
-- `telegram_support_message_thread_id`
-- `telegram_webhook_secret`
-- `telegram_timeout_seconds`
-- `supabase_url`
-- `supabase_service_role_key`
-- `supabase_timeout_seconds`
-- `support_conversations_table`
-- `support_messages_table`
-- `support_telegram_map_table`
+- `TELEGRAM_SUPPORT_BOT_TOKEN`
+- `TELEGRAM_SUPPORT_CHAT_ID`
+- `TELEGRAM_SUPPORT_MESSAGE_THREAD_ID`
+- `TELEGRAM_SUPPORT_WEBHOOK_SECRET`
+- `TELEGRAM_SUPPORT_PUBLIC_BASE_URL`
+- `TELEGRAM_SUPPORT_TIMEOUT_SECONDS`
+- `TELEGRAM_SUPPORT_WEBHOOK_SYNC_ON_STARTUP`
+- `TELEGRAM_SUPPORT_ALLOWED_UPDATES`
+- `SUPABASE_URL`
+- `SUPABASE_SERVICE_ROLE_KEY`
+- `SUPABASE_TIMEOUT_SECONDS`
+- `TELEGRAM_SUPPORT_ATTACHMENTS_BUCKET`
+- `TELEGRAM_SUPPORT_CONVERSATIONS_TABLE`
+- `TELEGRAM_SUPPORT_MESSAGES_TABLE`
+- `TELEGRAM_SUPPORT_MAP_TABLE`
 
 ### Passenger database
 

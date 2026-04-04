@@ -3,14 +3,18 @@ from __future__ import annotations
 from fastapi import APIRouter, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
 
-from backend.auth.api import get_authenticated_user
+from backend.auth.api import get_authenticated_user, read_request_payload
+from backend.gateway.admin_auth import require_super_admin_request
 from backend.gateway.esim_app_store import get_user_by_id
 
 from . import supabase_repo
 from .schemas import ConversationResponse, CustomerMessageRequest
 from .service import (
+    ensure_telegram_webhook_registered,
+    get_telegram_webhook_status,
     handle_telegram_update,
     load_current_conversation,
+    register_telegram_webhook,
     send_customer_message,
     validate_telegram_webhook_secret,
 )
@@ -125,5 +129,35 @@ async def telegram_webhook(
     try:
         result = handle_telegram_update(payload if isinstance(payload, dict) else {})
         return {"status": "ok", "result": result}
+    except Exception as exc:
+        return _error_response(exc, default_status=400)
+
+
+@router.get("/api/telegram-support/admin/webhook")
+def telegram_webhook_status(request: Request):
+    try:
+        require_super_admin_request(request)
+        return {"status": "ok", "webhook": get_telegram_webhook_status()}
+    except Exception as exc:
+        return _error_response(exc, default_status=400)
+
+
+@router.post("/api/telegram-support/admin/webhook/register")
+async def telegram_webhook_register(request: Request):
+    try:
+        require_super_admin_request(request)
+        payload = await read_request_payload(request)
+        drop_pending_updates = bool((payload or {}).get("drop_pending_updates"))
+        result = register_telegram_webhook(drop_pending_updates=drop_pending_updates)
+        return {"status": "ok", "result": result}
+    except Exception as exc:
+        return _error_response(exc, default_status=400)
+
+
+@router.post("/api/telegram-support/admin/webhook/ensure")
+def telegram_webhook_ensure(request: Request):
+    try:
+        require_super_admin_request(request)
+        return {"status": "ok", "result": ensure_telegram_webhook_registered()}
     except Exception as exc:
         return _error_response(exc, default_status=400)

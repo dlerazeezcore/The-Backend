@@ -7,38 +7,29 @@ from typing import Any
 import requests
 
 from . import supabase_repo
-from .settings import read_float, read_int, read_text
+from .settings import TelegramSupportSettings, get_settings
 
 
 def _clean_text(value: object) -> str:
     return str(value or "").strip()
 
 
-def _telegram_bot_token() -> str:
-    return _clean_text(read_text("telegram_bot_token"))
+def _settings() -> TelegramSupportSettings:
+    return get_settings()
 
 
-def _telegram_support_chat_id() -> str:
-    return _clean_text(read_text("telegram_support_chat_id"))
+def expected_telegram_webhook_url(settings: TelegramSupportSettings | None = None) -> str:
+    cfg = settings or _settings()
+    if not cfg.public_base_url:
+        return ""
+    return f"{cfg.public_base_url}/api/telegram-support/webhook"
 
 
-def _telegram_support_thread_id() -> int | None:
-    return read_int("telegram_support_message_thread_id")
-
-
-def _telegram_secret_token() -> str:
-    return _clean_text(read_text("telegram_webhook_secret"))
-
-
-def _telegram_timeout_seconds() -> float:
-    return read_float("telegram_timeout_seconds", 20.0)
-
-
-def _telegram_api_url(method: str) -> str:
-    token = _telegram_bot_token()
-    if not token:
+def _telegram_api_url(method: str, *, settings: TelegramSupportSettings | None = None) -> str:
+    cfg = settings or _settings()
+    if not cfg.bot_token:
         raise RuntimeError("TELEGRAM_BOT_TOKEN is missing.")
-    return f"https://api.telegram.org/bot{token}/{method}"
+    return f"https://api.telegram.org/bot{cfg.bot_token}/{method}"
 
 
 def _telegram_display_name(user: dict[str, Any]) -> str:
@@ -64,33 +55,135 @@ def _preview(text: str, *, limit: int = 120) -> str:
     return value[: limit - 3].rstrip() + "..."
 
 
-def _post_telegram(method: str, payload: dict[str, Any]) -> dict[str, Any]:
+def _telegram_api_call(method: str, payload: dict[str, Any] | None = None, *, settings: TelegramSupportSettings | None = None) -> Any:
+    cfg = settings or _settings()
     response = requests.post(
-        _telegram_api_url(method),
-        json=payload,
-        timeout=_telegram_timeout_seconds(),
+        _telegram_api_url(method, settings=cfg),
+        json=payload if payload is not None else {},
+        timeout=cfg.timeout_seconds,
     )
     if response.status_code >= 400:
         raise RuntimeError(f"Telegram API failed ({response.status_code}): {response.text[:300]}")
     body = response.json()
     if not bool(body.get("ok")):
         raise RuntimeError(f"Telegram API returned error: {body}")
-    result = body.get("result")
+    return body.get("result")
+
+
+def _post_telegram(method: str, payload: dict[str, Any], *, settings: TelegramSupportSettings | None = None) -> dict[str, Any]:
+    result = _telegram_api_call(method, payload, settings=settings)
     return result if isinstance(result, dict) else {}
 
 
-def _telegram_file_download_url(file_path: str) -> str:
-    token = _telegram_bot_token()
-    if not token:
+def _telegram_file_download_url(file_path: str, *, settings: TelegramSupportSettings | None = None) -> str:
+    cfg = settings or _settings()
+    if not cfg.bot_token:
         raise RuntimeError("TELEGRAM_BOT_TOKEN is missing.")
-    return f"https://api.telegram.org/file/bot{token}/{file_path.lstrip('/')}"
+    return f"https://api.telegram.org/file/bot{cfg.bot_token}/{file_path.lstrip('/')}"
 
 
 def validate_telegram_webhook_secret(header_value: str | None) -> bool:
-    expected = _telegram_secret_token()
+    expected = _settings().webhook_secret
     if not expected:
         return True
     return _clean_text(header_value) == expected
+
+
+def get_telegram_webhook_info(*, settings: TelegramSupportSettings | None = None) -> dict[str, Any]:
+    result = _telegram_api_call("getWebhookInfo", settings=settings)
+    return result if isinstance(result, dict) else {}
+
+
+def get_telegram_webhook_status(*, settings: TelegramSupportSettings | None = None) -> dict[str, Any]:
+    cfg = settings or _settings()
+    desired_url = expected_telegram_webhook_url(cfg)
+    base = {
+        "desired_url": desired_url,
+        "public_base_url": cfg.public_base_url,
+        "bot_configured": bool(cfg.bot_token),
+        "secret_configured": bool(cfg.webhook_secret),
+        "sync_on_startup": bool(cfg.webhook_sync_on_startup),
+    }
+    if not cfg.bot_token:
+        return {
+            **base,
+            "current_url": "",
+            "matches_expected": False,
+            "pending_update_count": 0,
+            "last_error_date": None,
+            "last_error_message": "",
+            "allowed_updates": list(cfg.allowed_updates),
+        }
+
+    info = get_telegram_webhook_info(settings=cfg)
+    current_url = _clean_text(info.get("url"))
+    return {
+        **base,
+        "current_url": current_url,
+        "matches_expected": bool(desired_url) and current_url == desired_url,
+        "pending_update_count": int(info.get("pending_update_count") or 0),
+        "last_error_date": info.get("last_error_date"),
+        "last_error_message": _clean_text(info.get("last_error_message")),
+        "allowed_updates": list(info.get("allowed_updates") or []),
+    }
+
+
+def register_telegram_webhook(*, settings: TelegramSupportSettings | None = None, drop_pending_updates: bool = False) -> dict[str, Any]:
+    cfg = settings or _settings()
+    if not cfg.bot_token:
+        raise RuntimeError("Telegram bot token is missing. Set TELEGRAM_SUPPORT_BOT_TOKEN.")
+    desired_url = expected_telegram_webhook_url(cfg)
+    if not desired_url:
+        raise RuntimeError(
+            "Telegram webhook public URL is missing. Set TELEGRAM_SUPPORT_PUBLIC_BASE_URL or PUBLIC_BASE_URL."
+        )
+
+    payload: dict[str, Any] = {
+        "url": desired_url,
+        "allowed_updates": list(cfg.allowed_updates),
+        "drop_pending_updates": bool(drop_pending_updates),
+    }
+    if cfg.webhook_secret:
+        payload["secret_token"] = cfg.webhook_secret
+
+    set_result = _telegram_api_call("setWebhook", payload, settings=cfg)
+    info = get_telegram_webhook_info(settings=cfg)
+    current_url = _clean_text(info.get("url"))
+    return {
+        "desired_url": desired_url,
+        "current_url": current_url,
+        "verified": current_url == desired_url,
+        "set_result": set_result,
+        "webhook_info": info,
+    }
+
+
+def ensure_telegram_webhook_registered(*, settings: TelegramSupportSettings | None = None) -> dict[str, Any]:
+    cfg = settings or _settings()
+    desired_url = expected_telegram_webhook_url(cfg)
+    if not cfg.bot_token:
+        return {"status": "skipped", "reason": "missing_bot_token", "desired_url": desired_url}
+    if not cfg.webhook_sync_on_startup:
+        return {"status": "skipped", "reason": "sync_disabled", "desired_url": desired_url}
+    if not desired_url:
+        return {"status": "skipped", "reason": "missing_public_base_url", "desired_url": desired_url}
+
+    info = get_telegram_webhook_info(settings=cfg)
+    current_url = _clean_text(info.get("url"))
+    if current_url == desired_url:
+        return {
+            "status": "ok",
+            "action": "noop",
+            "desired_url": desired_url,
+            "current_url": current_url,
+            "verified": True,
+            "webhook_info": info,
+        }
+
+    result = register_telegram_webhook(settings=cfg)
+    result["status"] = "ok" if bool(result.get("verified")) else "warning"
+    result["action"] = "setWebhook"
+    return result
 
 
 def _support_message_markup(*, customer_label: str, customer_phone: str, body: str) -> str:
@@ -135,6 +228,7 @@ def _support_photo_caption(*, customer_label: str, customer_phone: str, body: st
 
 
 def send_customer_message(user: dict[str, Any], body: str, *, attachment: dict[str, Any] | None = None) -> dict[str, Any]:
+    cfg = _settings()
     text = _clean_text(body)
     attachment_meta = _attachment_metadata(attachment)
     if not text and not attachment_meta:
@@ -153,11 +247,11 @@ def send_customer_message(user: dict[str, Any], body: str, *, attachment: dict[s
         metadata=metadata,
     )
 
-    support_chat_id = _telegram_support_chat_id()
+    support_chat_id = cfg.support_chat_id
     if not support_chat_id:
         raise RuntimeError("TELEGRAM_SUPPORT_CHAT_ID is missing.")
 
-    thread_id = _telegram_support_thread_id()
+    thread_id = cfg.support_message_thread_id
     telegram_method = "sendMessage"
     telegram_payload: dict[str, Any]
     if attachment_meta:
@@ -186,7 +280,7 @@ def send_customer_message(user: dict[str, Any], body: str, *, attachment: dict[s
     if thread_id is not None:
         telegram_payload["message_thread_id"] = thread_id
 
-    telegram_result = _post_telegram(telegram_method, telegram_payload)
+    telegram_result = _post_telegram(telegram_method, telegram_payload, settings=cfg)
     telegram_message_id = telegram_result.get("message_id")
     telegram_chat = telegram_result.get("chat") if isinstance(telegram_result.get("chat"), dict) else {}
     telegram_chat_id = _clean_text(telegram_chat.get("id")) or support_chat_id
@@ -236,6 +330,7 @@ def _sender_name(message: dict[str, Any]) -> str:
 
 
 def _extract_telegram_photo_attachment(message: dict[str, Any], conversation_id: str) -> dict[str, Any] | None:
+    cfg = _settings()
     photo_sizes = message.get("photo") if isinstance(message.get("photo"), list) else []
     if not photo_sizes:
         return None
@@ -247,12 +342,12 @@ def _extract_telegram_photo_attachment(message: dict[str, Any], conversation_id:
     if not file_id:
         return None
 
-    file_meta = _post_telegram("getFile", {"file_id": file_id})
+    file_meta = _post_telegram("getFile", {"file_id": file_id}, settings=cfg)
     file_path = _clean_text(file_meta.get("file_path"))
     if not file_path:
         return None
 
-    response = requests.get(_telegram_file_download_url(file_path), timeout=_telegram_timeout_seconds())
+    response = requests.get(_telegram_file_download_url(file_path, settings=cfg), timeout=cfg.timeout_seconds)
     if response.status_code >= 400:
         raise RuntimeError(f"Telegram file download failed ({response.status_code}): {response.text[:300]}")
 
@@ -267,6 +362,7 @@ def _extract_telegram_photo_attachment(message: dict[str, Any], conversation_id:
 
 
 def handle_telegram_update(update: dict[str, Any]) -> dict[str, Any]:
+    cfg = _settings()
     message = update.get("message") if isinstance(update.get("message"), dict) else None
     if not isinstance(message, dict):
         return {"status": "ignored", "reason": "No message payload."}
@@ -275,7 +371,7 @@ def handle_telegram_update(update: dict[str, Any]) -> dict[str, Any]:
     chat_id = _clean_text(chat.get("id"))
     if not chat_id:
         return {"status": "ignored", "reason": "Missing Telegram chat id."}
-    expected_chat_id = _telegram_support_chat_id()
+    expected_chat_id = cfg.support_chat_id
     if expected_chat_id and chat_id != expected_chat_id:
         return {"status": "ignored", "reason": "Message came from an unapproved Telegram chat."}
 
