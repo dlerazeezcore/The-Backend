@@ -12,6 +12,7 @@ import requests
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 
 from backend.esim.esimaccess.store import load_esimaccess_orders_items
+from backend.transactions.store import load_transactions_items
 from backend.gateway.esim_app_store import (
     ROOT_ADMIN_PHONE,
     add_super_admin,
@@ -1075,31 +1076,69 @@ def _has_terminal_esim_status_signal(*values: Any) -> bool:
     return False
 
 
-def _linked_terminal_order_snapshot(order_reference: str) -> Dict[str, Any] | None:
-    target = str(order_reference or "").strip()
-    if not target:
+def _linked_terminal_order_snapshot(esim: Dict[str, Any]) -> Dict[str, Any] | None:
+    order_reference = str(esim.get("orderReference") or esim.get("order_reference") or "").strip()
+    activation_code = str(esim.get("activationCode") or esim.get("activation_code") or "").strip()
+    install_url = str(esim.get("installUrl") or esim.get("install_url") or "").strip()
+
+    if not order_reference and not activation_code and not install_url:
         return None
 
     for row in load_esimaccess_orders_items():
         if not isinstance(row, dict):
             continue
-        if str(row.get("order_reference") or row.get("orderReference") or "").strip() != target:
+        row_order_reference = str(row.get("order_reference") or row.get("orderReference") or "").strip()
+        row_activation_code = str(row.get("activation_code") or "").strip()
+        row_install_url = str(row.get("quick_install_url") or "").strip()
+        if (
+            order_reference
+            and row_order_reference
+            and row_order_reference == order_reference
+        ) or (
+            activation_code
+            and row_activation_code
+            and row_activation_code == activation_code
+        ) or (
+            install_url
+            and row_install_url
+            and row_install_url == install_url
+        ):
+            if _has_terminal_esim_status_signal(
+                row.get("status"),
+                row.get("status_message"),
+                row.get("statusMessage"),
+                row.get("raw_query"),
+            ):
+                return row
+    return None
+
+
+def _has_linked_terminal_transaction(esim: Dict[str, Any]) -> bool:
+    order_reference = str(esim.get("orderReference") or esim.get("order_reference") or "").strip()
+    if not order_reference:
+        return False
+
+    for row in load_transactions_items():
+        if not isinstance(row, dict):
+            continue
+        details = row.get("details") if isinstance(row.get("details"), dict) else {}
+        transaction_order_reference = str(
+            details.get("order_reference") or row.get("booking_code") or "",
+        ).strip()
+        if transaction_order_reference != order_reference:
             continue
         if _has_terminal_esim_status_signal(
-            row.get("status"),
-            row.get("status_message"),
-            row.get("statusMessage"),
-            row.get("raw_query"),
+            details.get("esim_event"),
+            details.get("action"),
+            details.get("note"),
         ):
-            return row
-    return None
+            return True
+    return False
 
 
 def _apply_esim_lifecycle(esim: Dict[str, Any]) -> Dict[str, Any]:
     out = dict(esim)
-    linked_order = _linked_terminal_order_snapshot(
-        str(out.get("orderReference") or out.get("order_reference") or "").strip(),
-    )
+    linked_order = _linked_terminal_order_snapshot(out)
     if _has_terminal_esim_status_signal(
         out.get("status"),
         out.get("statusMessage"),
@@ -1107,8 +1146,12 @@ def _apply_esim_lifecycle(esim: Dict[str, Any]) -> Dict[str, Any]:
         linked_order.get("status") if linked_order else "",
         linked_order.get("status_message") if linked_order else "",
         linked_order.get("raw_query") if linked_order else "",
-    ):
+    ) or _has_linked_terminal_transaction(out):
         out["status"] = "expired"
+        if linked_order:
+            out["statusMessage"] = str(
+                linked_order.get("status_message") or linked_order.get("statusMessage") or linked_order.get("status") or "expired",
+            ).strip()
         out["daysLeft"] = 0
         return out
 
