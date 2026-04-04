@@ -79,6 +79,42 @@ def _support_push_tokens_for_user(user_id: str) -> list[str]:
     return tokens
 
 
+def _support_push_tokens_from_conversation_messages(conversation_id: str) -> list[str]:
+    target_conversation_id = _clean_text(conversation_id)
+    if not target_conversation_id:
+        return []
+
+    try:
+        rows = supabase_repo.list_messages(target_conversation_id, limit=120)
+    except Exception as exc:
+        print(f"WARNING: failed to load conversation messages for push token fallback: {exc}")
+        return []
+
+    tokens: list[str] = []
+    seen: set[str] = set()
+    for row in reversed(rows):
+        if str(row.get("sender_type") or "").strip().lower() != "customer":
+            continue
+        metadata = row.get("metadata")
+        if not isinstance(metadata, dict):
+            continue
+        support_push_target = metadata.get("supportPushTarget")
+        if not isinstance(support_push_target, dict):
+            continue
+        token = _clean_text(
+            support_push_target.get("token")
+            or support_push_target.get("pushToken")
+        )
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        tokens.append(token)
+        if len(tokens) >= 3:
+            break
+
+    return tokens
+
+
 def _send_support_reply_push_via_gateway(
     *,
     customer_user_id: str,
@@ -158,6 +194,7 @@ def _send_support_reply_push_via_gateway(
 def _send_support_reply_push(*, conversation: dict[str, Any] | None, text: str, attachment_name: str = "") -> dict[str, Any]:
     row = conversation if isinstance(conversation, dict) else {}
     customer_user_id = _clean_text(row.get("customer_user_id"))
+    conversation_id = _clean_text(row.get("id"))
     devices = list_push_devices_for_user(customer_user_id) if customer_user_id else []
     token_count = len(_support_push_tokens_for_user(customer_user_id)) if customer_user_id else 0
     if not customer_user_id:
@@ -183,6 +220,8 @@ def _send_support_reply_push(*, conversation: dict[str, Any] | None, text: str, 
         )
 
     tokens = _support_push_tokens_for_user(customer_user_id)
+    if not tokens and conversation_id:
+        tokens = _support_push_tokens_from_conversation_messages(conversation_id)
     if not tokens:
         return _send_support_reply_push_via_gateway(
             customer_user_id=customer_user_id,
@@ -424,7 +463,13 @@ def _support_photo_caption(*, customer_label: str, customer_phone: str, body: st
     return "\n".join(lines)
 
 
-def send_customer_message(user: dict[str, Any], body: str, *, attachment: dict[str, Any] | None = None) -> dict[str, Any]:
+def send_customer_message(
+    user: dict[str, Any],
+    body: str,
+    *,
+    attachment: dict[str, Any] | None = None,
+    support_push_target: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     cfg = _settings()
     text = _clean_text(body)
     attachment_meta = _attachment_metadata(attachment)
@@ -435,6 +480,19 @@ def send_customer_message(user: dict[str, Any], body: str, *, attachment: dict[s
     metadata: dict[str, Any] = {"source": "app"}
     if attachment_meta:
         metadata["attachment"] = attachment_meta
+    if isinstance(support_push_target, dict):
+        target = support_push_target
+        token = _clean_text(target.get("token") or target.get("pushToken"))
+        install_id = _clean_text(target.get("installId"))
+        platform = _clean_text(target.get("platform")).lower()
+        if token or install_id:
+            metadata["supportPushTarget"] = {
+                "token": token,
+                "installId": install_id,
+                "platform": platform if platform in {"ios", "android", "web"} else "",
+                "notificationsEnabled": bool(target.get("notificationsEnabled", True)),
+                "recordedAt": _now_iso(),
+            }
     message = supabase_repo.create_message(
         conversation_id=str(conversation.get("id") or ""),
         sender_type="customer",

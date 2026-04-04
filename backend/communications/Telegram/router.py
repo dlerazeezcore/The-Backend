@@ -103,6 +103,24 @@ def _sync_support_push_device_from_headers(request: Request, user: dict) -> None
         print(f"WARNING: support push device sync from headers failed: {exc}")
 
 
+def _extract_support_push_target_from_headers(request: Request) -> dict[str, object]:
+    install_id = str(request.headers.get("x-push-install-id") or "").strip()
+    token = str(request.headers.get("x-push-token") or "").strip()
+    if not install_id and not token:
+        return {}
+
+    target: dict[str, object] = {}
+    if install_id:
+        target["installId"] = install_id
+    if token:
+        target["token"] = token
+    platform = _normalize_push_platform(request.headers.get("x-push-platform"))
+    if platform:
+        target["platform"] = platform
+    target["notificationsEnabled"] = _read_push_enabled_header(request.headers.get("x-push-enabled"))
+    return target
+
+
 def _error_response(exc: Exception, default_status: int = 400) -> JSONResponse:
     if isinstance(exc, HTTPException):
         return JSONResponse(status_code=int(exc.status_code), content={"status": "error", "error": str(exc.detail)})
@@ -130,6 +148,7 @@ async def create_support_message(
     try:
         user = require_support_authenticated_user(request)
         _sync_support_push_device_from_headers(request, user)
+        support_push_target = _extract_support_push_target_from_headers(request)
         text = _pick_message_text(body)
         upload_meta = None
         content_type = str(request.headers.get("content-type") or "").lower()
@@ -175,7 +194,12 @@ async def create_support_message(
                 content=blob,
                 content_type=file_content_type,
             )
-        payload = send_customer_message(user, text or "", attachment=upload_meta)
+        payload = send_customer_message(
+            user,
+            text or "",
+            attachment=upload_meta,
+            support_push_target=support_push_target,
+        )
         return {
             "status": "ok",
             "conversation": payload.get("conversation"),
