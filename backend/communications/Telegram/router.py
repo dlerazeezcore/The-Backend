@@ -238,7 +238,14 @@ async def telegram_webhook(
 
     payload_dict = payload if isinstance(payload, dict) else {}
     update_id = payload_dict.get("update_id")
-    message = payload_dict.get("message") if isinstance(payload_dict.get("message"), dict) else {}
+    update_type = ""
+    message: dict = {}
+    for candidate in ("message", "edited_message", "channel_post", "edited_channel_post"):
+        maybe_message = payload_dict.get(candidate)
+        if isinstance(maybe_message, dict):
+            update_type = candidate
+            message = maybe_message
+            break
     chat = message.get("chat") if isinstance(message.get("chat"), dict) else {}
     chat_id = str(chat.get("id") or "").strip()
 
@@ -250,15 +257,15 @@ async def telegram_webhook(
         if not allow_unsigned or not expected_chat_id or chat_id != expected_chat_id:
             print(
                 "WARNING: telegram webhook rejected due to secret mismatch "
-                f"(update_id={update_id}, chat_id={chat_id})"
+                f"(update_id={update_id}, update_type={update_type}, chat_id={chat_id})"
             )
             return JSONResponse(status_code=401, content={"status": "error", "error": "Invalid Telegram webhook secret."})
         print(
             "WARNING: telegram webhook accepted without matching secret "
-            f"(update_id={update_id}, chat_id={chat_id})"
+            f"(update_id={update_id}, update_type={update_type}, chat_id={chat_id})"
         )
 
-    print(f"INFO: telegram webhook received (update_id={update_id}, chat_id={chat_id})")
+    print(f"INFO: telegram webhook received (update_id={update_id}, update_type={update_type}, chat_id={chat_id})")
 
     try:
         result = handle_telegram_update(payload_dict)

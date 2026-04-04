@@ -10,7 +10,12 @@ from typing import Any
 
 CONFIG_PATH = Path(__file__).resolve().parent / "config.json"
 PLACEHOLDER_PREFIXES = ("PUT_", "<")
-DEFAULT_ALLOWED_UPDATES = ("message",)
+DEFAULT_ALLOWED_UPDATES = (
+    "message",
+    "edited_message",
+    "channel_post",
+    "edited_channel_post",
+)
 ENV_KEY_ALIASES = {
     "telegram_bot_token": ("TELEGRAM_SUPPORT_BOT_TOKEN", "TELEGRAM_BOT_TOKEN"),
     "telegram_support_chat_id": ("TELEGRAM_SUPPORT_CHAT_ID",),

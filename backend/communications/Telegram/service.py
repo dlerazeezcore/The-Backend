@@ -446,19 +446,33 @@ def ensure_telegram_webhook_registered(*, settings: TelegramSupportSettings | No
 
     info = get_telegram_webhook_info(settings=cfg)
     current_url = _clean_text(info.get("url"))
-    if current_url == desired_url:
+    current_allowed_updates = tuple(
+        str(item or "").strip()
+        for item in (info.get("allowed_updates") or [])
+        if str(item or "").strip()
+    )
+    desired_allowed_updates = tuple(
+        str(item or "").strip()
+        for item in cfg.allowed_updates
+        if str(item or "").strip()
+    )
+    allowed_updates_match = set(current_allowed_updates) == set(desired_allowed_updates)
+
+    if current_url == desired_url and allowed_updates_match:
         return {
             "status": "ok",
             "action": "noop",
             "desired_url": desired_url,
             "current_url": current_url,
             "verified": True,
+            "allowed_updates_match": True,
             "webhook_info": info,
         }
 
     result = register_telegram_webhook(settings=cfg)
     result["status"] = "ok" if bool(result.get("verified")) else "warning"
     result["action"] = "setWebhook"
+    result["allowed_updates_match"] = allowed_updates_match
     return result
 
 
@@ -646,6 +660,14 @@ def _sender_name(message: dict[str, Any]) -> str:
     return _clean_text(sender.get("username")) or "Support"
 
 
+def _extract_supported_update_message(update: dict[str, Any]) -> tuple[dict[str, Any] | None, str]:
+    for key in ("message", "edited_message", "channel_post", "edited_channel_post"):
+        value = update.get(key)
+        if isinstance(value, dict):
+            return value, key
+    return None, ""
+
+
 def _extract_telegram_photo_attachment(message: dict[str, Any], conversation_id: str) -> dict[str, Any] | None:
     cfg = _settings()
     photo_sizes = message.get("photo") if isinstance(message.get("photo"), list) else []
@@ -680,9 +702,9 @@ def _extract_telegram_photo_attachment(message: dict[str, Any], conversation_id:
 
 def handle_telegram_update(update: dict[str, Any]) -> dict[str, Any]:
     cfg = _settings()
-    message = update.get("message") if isinstance(update.get("message"), dict) else None
+    message, update_type = _extract_supported_update_message(update)
     if not isinstance(message, dict):
-        return {"status": "ignored", "reason": "No message payload."}
+        return {"status": "ignored", "reason": "No supported message payload."}
 
     chat = message.get("chat") if isinstance(message.get("chat"), dict) else {}
     chat_id = _clean_text(chat.get("id"))
@@ -690,7 +712,11 @@ def handle_telegram_update(update: dict[str, Any]) -> dict[str, Any]:
         return {"status": "ignored", "reason": "Missing Telegram chat id."}
     expected_chat_id = cfg.support_chat_id
     if expected_chat_id and chat_id != expected_chat_id:
-        return {"status": "ignored", "reason": "Message came from an unapproved Telegram chat."}
+        return {
+            "status": "ignored",
+            "reason": "Message came from an unapproved Telegram chat.",
+            "update_type": update_type,
+        }
 
     reply_to = message.get("reply_to_message") if isinstance(message.get("reply_to_message"), dict) else None
     reply_to_message_id = reply_to.get("message_id") if isinstance(reply_to, dict) else None
@@ -705,12 +731,20 @@ def handle_telegram_update(update: dict[str, Any]) -> dict[str, Any]:
     if not mapping:
         mapping = supabase_repo.find_latest_support_mapping_for_chat(telegram_chat_id=chat_id)
         if not mapping:
-            return {"status": "ignored", "reason": "No support conversation mapping found for Telegram reply."}
+            return {
+                "status": "ignored",
+                "reason": "No support conversation mapping found for Telegram reply.",
+                "update_type": update_type,
+            }
 
     conversation_id = _clean_text(mapping.get("conversation_id"))
     telegram_message_id = message.get("message_id")
     if not conversation_id or not isinstance(telegram_message_id, int):
-        return {"status": "ignored", "reason": "Telegram reply is missing required identifiers."}
+        return {
+            "status": "ignored",
+            "reason": "Telegram reply is missing required identifiers.",
+            "update_type": update_type,
+        }
 
     existing = supabase_repo.find_conversation_by_telegram_message(
         telegram_chat_id=chat_id,
@@ -722,13 +756,18 @@ def handle_telegram_update(update: dict[str, Any]) -> dict[str, Any]:
             "conversation_id": conversation_id,
             "message_id": _clean_text(existing.get("app_message_id")),
             "duplicate": True,
+            "update_type": update_type,
         }
 
     text = _telegram_message_text(message)
     attachment = _extract_telegram_photo_attachment(message, conversation_id=conversation_id)
     attachment_meta = _attachment_metadata(attachment)
     if not text and not attachment_meta:
-        return {"status": "ignored", "reason": "Only text or photo replies are supported."}
+        return {
+            "status": "ignored",
+            "reason": "Only text or photo replies are supported.",
+            "update_type": update_type,
+        }
 
     metadata: dict[str, Any] = {"source": "telegram"}
     if attachment_meta:
@@ -771,4 +810,5 @@ def handle_telegram_update(update: dict[str, Any]) -> dict[str, Any]:
         "conversation_id": conversation_id,
         "message_id": str(saved.get("id") or ""),
         "push": push_result,
+        "update_type": update_type,
     }
