@@ -118,7 +118,10 @@ def send_push_notification(
                 notification=messaging.AndroidNotification(channel_id=str(channel_id or "general")),
             ),
             apns=messaging.APNSConfig(
-                headers={"apns-priority": "10"},
+                headers={
+                    "apns-priority": "10",
+                    "apns-push-type": "alert",
+                },
                 payload=messaging.APNSPayload(aps=messaging.Aps(sound="default")),
             ),
         )
