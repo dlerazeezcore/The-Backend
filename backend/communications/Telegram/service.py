@@ -390,6 +390,16 @@ def get_telegram_webhook_info(*, settings: TelegramSupportSettings | None = None
     return result if isinstance(result, dict) else {}
 
 
+def get_telegram_bot_identity(*, settings: TelegramSupportSettings | None = None) -> dict[str, Any]:
+    result = _telegram_api_call("getMe", settings=settings)
+    row = result if isinstance(result, dict) else {}
+    return {
+        "id": row.get("id"),
+        "username": _clean_text(row.get("username")),
+        "first_name": _clean_text(row.get("first_name")),
+    }
+
+
 def get_telegram_updates(
     *,
     offset: int | None = None,

@@ -73,7 +73,17 @@ async def _startup_check():
         except Exception as exc:
             print(f"WARNING: eSIM cache prewarm skipped: {exc}")
     try:
-        from backend.communications.Telegram.service import ensure_telegram_webhook_registered
+        from backend.communications.Telegram.service import (
+            ensure_telegram_webhook_registered,
+            get_telegram_bot_identity,
+            get_telegram_webhook_info,
+        )
+
+        try:
+            bot_identity = await run_in_threadpool(get_telegram_bot_identity)
+            print(f"telegram bot identity: {bot_identity}")
+        except Exception as exc:
+            print(f"WARNING: telegram bot identity check failed: {exc}")
 
         sync_result = None
         last_error: Exception | None = None
@@ -91,6 +101,12 @@ async def _startup_check():
 
         if last_error is not None:
             print(f"WARNING: telegram webhook startup sync failed: {last_error}")
+        else:
+            try:
+                webhook_info = await run_in_threadpool(get_telegram_webhook_info)
+                print(f"telegram webhook post-sync info: {webhook_info}")
+            except Exception as exc:
+                print(f"WARNING: telegram webhook post-sync check failed: {exc}")
     except Exception as exc:
         print(f"WARNING: telegram webhook startup sync failed: {exc}")
 
